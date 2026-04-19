@@ -12,7 +12,7 @@ from Logging import Logger
 from Methods.Base.GuiTrainer import GuiTrainer
 from Methods.Base.utils import pre_training_callback, training_callback, post_training_callback
 from Methods.FastGS.Loss import FastGSLoss
-from Methods.FasterGS.utils import enable_expandable_segments, carve
+from Methods.FastGS.utils import enable_expandable_segments, carve
 from Optim.Losses.DSSIM import fused_dssim
 from Optim.Samplers.DatasetSamplers import DatasetSampler
 
