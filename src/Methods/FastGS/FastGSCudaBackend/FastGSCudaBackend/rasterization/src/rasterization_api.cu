@@ -364,4 +364,3 @@ fast_gs::rasterization::metric_counts_wrapper(
         proper_antialiasing
     );
 }
-}

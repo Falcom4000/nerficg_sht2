@@ -6,6 +6,35 @@
 
 namespace fast_gs::rasterization {
 
+    // Shared preprocessing pipeline: project Gaussians, depth-sort, build offsets.
+    // Populates primitive_buffers and returns n_visible_primitives / n_instances.
+    void run_preprocessing(
+        std::function<char* (size_t)>& resize_primitive_buffers,
+        const float3* means,
+        const float3* scales,
+        const float4* rotations,
+        const float* opacities,
+        const float3* sh_coefficients_0,
+        const float3* sh_coefficients_rest,
+        const float4* w2c,
+        const float3* cam_position,
+        PrimitiveBuffers& primitive_buffers,
+        const dim3& grid,
+        const int n_primitives,
+        const int active_sh_bases,
+        const int total_sh_bases,
+        const int width,
+        const int height,
+        const float focal_x,
+        const float focal_y,
+        const float center_x,
+        const float center_y,
+        const float near_plane,
+        const float far_plane,
+        const bool proper_antialiasing,
+        int& n_visible_primitives_out,
+        int& n_instances_out);
+
     void pruning_scores(
         std::function<char* (size_t)> resize_primitive_buffers,
         std::function<char* (size_t)> resize_tile_buffers,

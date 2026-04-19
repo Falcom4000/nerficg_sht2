@@ -7,6 +7,82 @@
 #include <cub/cub.cuh>
 #include <functional>
 
+void fast_gs::rasterization::run_preprocessing(
+    std::function<char* (size_t)>& resize_primitive_buffers,
+    const float3* means,
+    const float3* scales,
+    const float4* rotations,
+    const float* opacities,
+    const float3* sh_coefficients_0,
+    const float3* sh_coefficients_rest,
+    const float4* w2c,
+    const float3* cam_position,
+    PrimitiveBuffers& primitive_buffers,
+    const dim3& grid,
+    const int n_primitives,
+    const int active_sh_bases,
+    const int total_sh_bases,
+    const int width,
+    const int height,
+    const float focal_x,
+    const float focal_y,
+    const float center_x,
+    const float center_y,
+    const float near_plane,
+    const float far_plane,
+    const bool proper_antialiasing,
+    int& n_visible_primitives_out,
+    int& n_instances_out)
+{
+    char* primitive_buffers_blob = resize_primitive_buffers(required<PrimitiveBuffers>(n_primitives));
+    primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives);
+
+    cudaMemset(primitive_buffers.n_visible_primitives, 0, sizeof(uint));
+    cudaMemset(primitive_buffers.n_instances, 0, sizeof(uint));
+
+    kernels::pruning_scores::preprocess_cu<<<div_round_up(n_primitives, config::block_size_preprocess), config::block_size_preprocess>>>(
+        means, scales, rotations, opacities,
+        sh_coefficients_0, sh_coefficients_rest,
+        w2c, cam_position,
+        primitive_buffers.depth_keys.Current(),
+        primitive_buffers.primitive_indices.Current(),
+        primitive_buffers.n_touched_tiles,
+        primitive_buffers.screen_bounds,
+        primitive_buffers.mean2d,
+        primitive_buffers.conic_opacity,
+        primitive_buffers.color,
+        primitive_buffers.n_visible_primitives,
+        primitive_buffers.n_instances,
+        n_primitives, grid.x, grid.y,
+        active_sh_bases, total_sh_bases,
+        static_cast<float>(width), static_cast<float>(height),
+        focal_x, focal_y, center_x, center_y,
+        near_plane, far_plane, proper_antialiasing);
+    CHECK_CUDA(config::debug, "preprocess")
+
+    cudaMemcpy(&n_visible_primitives_out, primitive_buffers.n_visible_primitives, sizeof(uint), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&n_instances_out, primitive_buffers.n_instances, sizeof(uint), cudaMemcpyDeviceToHost);
+
+    cub::DeviceRadixSort::SortPairs(
+        primitive_buffers.cub_workspace, primitive_buffers.cub_workspace_size,
+        primitive_buffers.depth_keys, primitive_buffers.primitive_indices,
+        n_visible_primitives_out);
+    CHECK_CUDA(config::debug, "cub::DeviceRadixSort::SortPairs (depth)")
+
+    kernels::pruning_scores::apply_depth_ordering_cu<<<div_round_up(n_visible_primitives_out, config::block_size_apply_depth_ordering), config::block_size_apply_depth_ordering>>>(
+        primitive_buffers.primitive_indices.Current(),
+        primitive_buffers.n_touched_tiles,
+        primitive_buffers.offset,
+        n_visible_primitives_out);
+    CHECK_CUDA(config::debug, "apply_depth_ordering")
+
+    cub::DeviceScan::ExclusiveSum(
+        primitive_buffers.cub_workspace, primitive_buffers.cub_workspace_size,
+        primitive_buffers.offset, primitive_buffers.offset,
+        n_visible_primitives_out);
+    CHECK_CUDA(config::debug, "cub::DeviceScan::ExclusiveSum (primitive_buffers.offset)")
+}
+
 // sorting is done separately for depth and tile as proposed in https://github.com/m-schuetz/Splatshop
 void fast_gs::rasterization::pruning_scores(
     std::function<char* (size_t)> resize_primitive_buffers,
@@ -54,81 +130,19 @@ void fast_gs::rasterization::pruning_scores(
     }
     else cudaMemset(tile_buffers.instance_ranges, 0, sizeof(uint2) * n_tiles);
 
-    char* primitive_buffers_blob = resize_primitive_buffers(required<PrimitiveBuffers>(n_primitives));
-    PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives);
+    PrimitiveBuffers primitive_buffers;
+    int n_visible_primitives, n_instances;
+    run_preprocessing(
+        resize_primitive_buffers,
+        means, scales, rotations, opacities,
+        sh_coefficients_0, sh_coefficients_rest,
+        w2c, cam_position,
+        primitive_buffers, grid, n_primitives,
+        active_sh_bases, total_sh_bases,
+        width, height, focal_x, focal_y, center_x, center_y,
+        near_plane, far_plane, proper_antialiasing,
+        n_visible_primitives, n_instances);
 
-    cudaMemset(primitive_buffers.n_visible_primitives, 0, sizeof(uint));
-    cudaMemset(primitive_buffers.n_instances, 0, sizeof(uint));
-
-    kernels::pruning_scores::preprocess_cu<<<div_round_up(n_primitives, config::block_size_preprocess), config::block_size_preprocess>>>(
-        means,
-        scales,
-        rotations,
-        opacities,
-        sh_coefficients_0,
-        sh_coefficients_rest,
-        w2c,
-        cam_position,
-        primitive_buffers.depth_keys.Current(),
-        primitive_buffers.primitive_indices.Current(),
-        primitive_buffers.n_touched_tiles,
-        primitive_buffers.screen_bounds,
-        primitive_buffers.mean2d,
-        primitive_buffers.conic_opacity,
-        primitive_buffers.color,
-        primitive_buffers.n_visible_primitives,
-        primitive_buffers.n_instances,
-        n_primitives,
-        grid.x,
-        grid.y,
-        active_sh_bases,
-        total_sh_bases,
-        static_cast<float>(width),
-        static_cast<float>(height),
-        focal_x,
-        focal_y,
-        center_x,
-        center_y,
-        near_plane,
-        far_plane,
-        proper_antialiasing
-    );
-    CHECK_CUDA(config::debug, "preprocess")
-
-    int n_visible_primitives;
-    cudaMemcpy(&n_visible_primitives, primitive_buffers.n_visible_primitives, sizeof(uint), cudaMemcpyDeviceToHost);
-    int n_instances;
-    cudaMemcpy(&n_instances, primitive_buffers.n_instances, sizeof(uint), cudaMemcpyDeviceToHost);
-
-    cub::DeviceRadixSort::SortPairs(
-        primitive_buffers.cub_workspace,
-        primitive_buffers.cub_workspace_size,
-        primitive_buffers.depth_keys,
-        primitive_buffers.primitive_indices,
-        n_visible_primitives
-    );
-    CHECK_CUDA(config::debug, "cub::DeviceRadixSort::SortPairs (depth)")
-
-    kernels::pruning_scores::apply_depth_ordering_cu<<<div_round_up(n_visible_primitives, config::block_size_apply_depth_ordering), config::block_size_apply_depth_ordering>>>(
-        primitive_buffers.primitive_indices.Current(),
-        primitive_buffers.n_touched_tiles,
-        primitive_buffers.offset,
-        n_visible_primitives
-    );
-    CHECK_CUDA(config::debug, "apply_depth_ordering")
-
-    cub::DeviceScan::ExclusiveSum(
-        primitive_buffers.cub_workspace,
-        primitive_buffers.cub_workspace_size,
-        primitive_buffers.offset,
-        primitive_buffers.offset,
-        n_visible_primitives
-    );
-    CHECK_CUDA(config::debug, "cub::DeviceScan::ExclusiveSum (primitive_buffers.offset)")
-
-    // with 16x16 tiles, 16 bit keys are sufficient for up to 16M pixels, i.e., 4Kx4K images
-    // beyond that, 32 bit keys are needed and for best performance, we template the remaining rasterization steps
-    // note that with c++20 one could use a templated lambda to improve readability here
     #define COMPUTE_SCORES_ARGS \
         resize_instance_buffers, \
         primitive_buffers, \
