@@ -1,0 +1,7 @@
+from Methods.FasterGSBasisRapid.Model import FasterGSBasisRapidModel
+from Methods.FasterGSBasisRapid.Renderer import FasterGSBasisRapidRenderer
+from Methods.FasterGSBasisRapid.Trainer import FasterGSBasisRapidTrainer
+
+MODEL = FasterGSBasisRapidModel
+RENDERER = FasterGSBasisRapidRenderer
+TRAINING_INSTANCE = FasterGSBasisRapidTrainer
