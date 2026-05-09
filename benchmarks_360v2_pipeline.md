@@ -46,15 +46,20 @@ Optional default config generation:
 python ./scripts/create_config.py -m <METHOD_NAME> -d MipNeRF360 -o <CONFIG_NAME>
 ```
 
-The benchmark script can also generate configs internally from the method and dataset defaults, so this step is optional.
+For benchmarking, prefer a config directory under `configs/` with one YAML per scene:
 
-For a custom method-specific template, pass it explicitly:
-
-```bash
-python ./scripts/benchmark_360v2.py \
-  -m <METHOD_NAME> \
-  --template <METHOD_NAME>=configs/<CONFIG_NAME>.yaml
+```text
+configs/<CONFIG_DIR>/
+  bicycle.yaml
+  bonsai.yaml
+  counter.yaml
+  garden.yaml
+  kitchen.yaml
+  room.yaml
+  stump.yaml
 ```
+
+Pass that directory to the runner with `--config-dir configs/<CONFIG_DIR>`.
 
 Useful benchmark defaults are forced by the runner:
 
@@ -67,40 +72,35 @@ Useful benchmark defaults are forced by the runner:
 
 ## 4. Run Full 360_v2 Benchmark
 
-Dataset root used in this workspace:
+The dataset root is fixed to `dataset/mipnerf360` by default. The runner discovers all scene directories there and runs them serially.
 
-```bash
-/root/codes/360_v2
-```
-
-Run all 7 scenes, 3 repeats per scene:
+Run all 7 scenes, 3 repeats per scene for one method:
 
 ```bash
 python ./scripts/benchmark_360v2.py \
   -m <METHOD_NAME> \
-  --dataset-root /root/codes/360_v2 \
+  --config-dir configs/<CONFIG_DIR> \
   --repeats 3
 ```
 
-Run multiple methods:
+For the current FasterGSFused baseline configs:
 
 ```bash
 python ./scripts/benchmark_360v2.py \
-  -m FasterGSFused FasterGSBasis <METHOD_NAME> \
-  --dataset-root /root/codes/360_v2 \
-  --repeats 3
+  -m FasterGSFused \
+  --config-dir configs/fastergsfused_baseline \
+  --repeats 3 \
+  --suite-name fastergsfused_baseline
 ```
 
-Run with method templates and extension installation:
+Multiple methods are supported, but then each config directory must be mapped explicitly:
 
 ```bash
 python ./scripts/benchmark_360v2.py \
   -m FasterGSFused FasterGSBasis \
-  --template FasterGSFused=src/Methods/FasterGSFused/fastergsfused_garden.yaml \
-  --template FasterGSBasis=src/Methods/FasterGSBasis/fastergsbasis_garden.yaml \
-  --dataset-root /root/codes/360_v2 \
-  --repeats 3 \
-  --install
+  --config-dir FasterGSFused=configs/fastergsfused_baseline \
+  --config-dir FasterGSBasis=configs/fastergsbasis_baseline \
+  --repeats 3
 ```
 
 Run a quick subset while developing:
@@ -108,11 +108,12 @@ Run a quick subset while developing:
 ```bash
 python ./scripts/benchmark_360v2.py \
   -m <METHOD_NAME> \
-  --dataset-root /root/codes/360_v2 \
-  --scenes garden bonsai \
+  --config-dir configs/<CONFIG_DIR> \
   --repeats 1 \
   --set TRAINING.NUM_ITERATIONS=1000
 ```
+
+This still runs all scenes, but for fewer iterations.
 
 ## 5. Output Layout
 
@@ -129,9 +130,9 @@ results_runs.csv              # one row per method/scene/repeat
 results_runs.json             # same data in JSON
 summary_by_scene.csv          # repeat averages per method+scene
 summary_by_scene.json
-summary_by_method.csv         # averages across all successful scenes/runs per method
+summary_by_method.csv         # machine-readable method-level aggregate
 summary_by_method.json
-summary.md                    # readable Markdown summary
+summary.md                    # readable Markdown summary with commit, config dir, and per-scene results
 configs/<method>/<scene>/     # generated config used for each run
 logs/<method>/<scene>/        # train logs for each run
 runs/<method>/<scene>/run_N/  # moved NeRFICG output directory

@@ -125,6 +125,19 @@ def parse_template_args(items: list[str]) -> dict[str, Path]:
     return templates
 
 
+def parse_config_dir_args(items: list[str], methods: list[str]) -> dict[str, Path]:
+    config_dirs = {}
+    for item in items:
+        if '=' in item:
+            method, path = item.split('=', 1)
+        elif len(methods) == 1:
+            method, path = methods[0], item
+        else:
+            raise ValueError(f'invalid --config-dir "{item}", expected METHOD=path when benchmarking multiple methods')
+        config_dirs[method] = Path(path)
+    return config_dirs
+
+
 def parse_set_args(items: list[str]) -> dict[str, Any]:
     overrides = {}
     for item in items:
@@ -179,6 +192,25 @@ def load_base_config(method: str, dataset_type: str, templates: dict[str, Path])
         config['GLOBAL']['DATASET_TYPE'] = dataset_type
         return config
     return generate_default_config(method, dataset_type)
+
+
+def load_scene_config(
+    method: str,
+    scene: str,
+    dataset_type: str,
+    templates: dict[str, Path],
+    config_dirs: dict[str, Path],
+) -> dict[str, Any]:
+    if method in config_dirs:
+        config_path = config_dirs[method] / f'{scene}.yaml'
+        if not config_path.is_file():
+            raise FileNotFoundError(f'missing scene config for {method}/{scene}: {config_path}')
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        config['GLOBAL']['METHOD_TYPE'] = method
+        config['GLOBAL']['DATASET_TYPE'] = dataset_type
+        return config
+    return load_base_config(method, dataset_type, templates)
 
 
 def prepare_run_config(
@@ -341,7 +373,13 @@ def write_csv(path: Path, rows: list[dict[str, Any]], columns: list[str] | None 
         writer.writerows(rows)
 
 
-def write_markdown_summary(path: Path, scene_summary: list[dict[str, Any]], method_summary: list[dict[str, Any]]) -> None:
+def write_markdown_summary(
+    path: Path,
+    records: list[dict[str, Any]],
+    scene_summary: list[dict[str, Any]],
+    config_dirs: dict[str, Path],
+    suite_dir: Path,
+) -> None:
     def fmt(value: Any) -> str:
         if value is None:
             return ''
@@ -349,41 +387,66 @@ def write_markdown_summary(path: Path, scene_summary: list[dict[str, Any]], meth
             return f'{value:.4f}'
         return str(value)
 
-    def table(rows: list[dict[str, Any]], columns: list[str]) -> str:
-        lines = ['| ' + ' | '.join(columns) + ' |', '| ' + ' | '.join(['---'] * len(columns)) + ' |']
+    def table(rows: list[dict[str, Any]], columns: list[tuple[str, str]]) -> str:
+        headers = [header for header, _ in columns]
+        lines = ['| ' + ' | '.join(headers) + ' |', '| ' + ' | '.join(['---'] * len(headers)) + ' |']
         for row in rows:
-            lines.append('| ' + ' | '.join(fmt(row.get(column)) for column in columns) + ' |')
+            lines.append('| ' + ' | '.join(fmt(row.get(key)) for _, key in columns) + ' |')
         return '\n'.join(lines)
 
     scene_columns = [
-        'method', 'scene', 'n_runs',
-        'wall_time_sec_mean', 'train_time_sec_mean',
-        'PSNR_mean', 'SSIM_mean', 'LPIPS_mean',
-        'n_gaussians_mean', 'vram_allocated_gb_mean', 'vram_reserved_gb_mean',
+        ('method', 'method'),
+        ('scene', 'scene'),
+        ('runs', 'n_runs'),
+        ('wall_time_sec', 'wall_time_sec_mean'),
+        ('train_time_sec', 'train_time_sec_mean'),
+        ('PSNR', 'PSNR_mean'),
+        ('SSIM', 'SSIM_mean'),
+        ('LPIPS', 'LPIPS_mean'),
+        ('n_gaussians', 'n_gaussians_mean'),
+        ('vram_allocated_gb', 'vram_allocated_gb_mean'),
+        ('vram_reserved_gb', 'vram_reserved_gb_mean'),
     ]
-    method_columns = [
-        'method', 'n_runs',
-        'wall_time_sec_mean', 'train_time_sec_mean',
-        'PSNR_mean', 'SSIM_mean', 'LPIPS_mean',
-        'n_gaussians_mean', 'vram_allocated_gb_mean', 'vram_reserved_gb_mean',
+
+    first_record = records[0] if records else {}
+    methods = sorted({str(record.get('method')) for record in records if record.get('method')})
+    config_rows = [
+        {
+            'method': method,
+            'source_config_dir': str(config_dirs[method]) if method in config_dirs else 'generated from defaults',
+            'generated_config_dir': str(suite_dir / 'configs' / method),
+        }
+        for method in methods
     ]
+
     with open(path, 'w') as f:
         f.write('# 360_v2 Benchmark Summary\n\n')
-        f.write('## By Scene\n\n')
+        f.write(f'- suite: {first_record.get("suite_name", "")}\n')
+        f.write(f'- generated_at: {datetime.now().isoformat(timespec="seconds")}\n')
+        f.write(f'- commit: {first_record.get("commit", "")}\n')
+        f.write(f'- git_dirty: {first_record.get("dirty", "")}\n')
+        f.write(f'- dataset_root: {first_record.get("dataset_root", "")}\n')
+        f.write(f'- repeats: {max((int(record.get("repeat", 0)) for record in records), default=0)}\n\n')
+        f.write('## Configs\n\n')
+        f.write(table(config_rows, [
+            ('method', 'method'),
+            ('source_config_dir', 'source_config_dir'),
+            ('generated_config_dir', 'generated_config_dir'),
+        ]))
+        f.write('\n\n## Results\n\n')
         f.write(table(scene_summary, scene_columns))
-        f.write('\n\n## By Method\n\n')
-        f.write(table(method_summary, method_columns))
         f.write('\n')
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description='Run repeated 360_v2/MipNeRF360 benchmarks serially.')
     parser.add_argument('-m', '--methods', nargs='+', required=True, help='Method names in src/Methods.')
-    parser.add_argument('--dataset-root', type=Path, default=Path('/root/codes/360_v2'))
+    parser.add_argument('--dataset-root', type=Path, default=None, help=argparse.SUPPRESS)
     parser.add_argument('-d', '--dataset-type', default='MipNeRF360')
-    parser.add_argument('--scenes', nargs='*', default=None, help='Scene names. Defaults to every directory under dataset root.')
+    parser.add_argument('--scenes', nargs='*', default=None, help=argparse.SUPPRESS)
     parser.add_argument('-r', '--repeats', type=int, default=3)
-    parser.add_argument('--template', action='append', default=[], help='Optional METHOD=path/to/template.yaml. Can be repeated.')
+    parser.add_argument('--config-dir', action='append', default=[], help='Scene config directory. Use path for one method or METHOD=path for multiple methods.')
+    parser.add_argument('--template', action='append', default=[], help=argparse.SUPPRESS)
     parser.add_argument('--set', dest='sets', action='append', default=[], help='Config override A.B=value. Can be repeated.')
     parser.add_argument('--suite-name', default=None)
     parser.add_argument('--config-name-prefix', default='benchmark360')
@@ -393,19 +456,22 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
+    dataset_root = args.dataset_root or (repo_root / 'dataset' / 'mipnerf360')
     dataset_type = normalize_dataset_type(args.dataset_type)
     templates = parse_template_args(args.template)
+    config_dirs = parse_config_dir_args(args.config_dir, args.methods)
     user_overrides = parse_set_args(args.sets)
-    scenes = args.scenes or list_sorted_directories(args.dataset_root)
+    scenes = args.scenes or list_sorted_directories(dataset_root)
     suite_name = args.suite_name or f'benchmark360_{datetime.now():%Y-%m-%d-%H-%M-%S}'
     suite_dir = repo_root / 'output' / 'benchmarks' / suite_name
     suite_dir.mkdir(parents=True, exist_ok=False)
 
     commit, dirty = get_git_state()
     records: list[dict[str, Any]] = []
-    base_configs = {}
 
     print('benchmark execution mode: serial; only one training process is run at a time')
+    print(f'dataset root: {dataset_root}')
+    print(f'scenes: {", ".join(scenes)}')
 
     for method in args.methods:
         if args.install:
@@ -416,17 +482,17 @@ def main() -> int:
             )
             if returncode != 0:
                 raise RuntimeError(f'extension installation failed for method {method}')
-        base_configs[method] = load_base_config(method, dataset_type, templates)
 
     for method in args.methods:
         for scene in scenes:
             for repeat in range(1, args.repeats + 1):
+                base_config = load_scene_config(method, scene, dataset_type, templates, config_dirs)
                 config = prepare_run_config(
-                    base_configs[method],
+                    base_config,
                     method=method,
                     scene=scene,
                     repeat=repeat,
-                    dataset_root=args.dataset_root,
+                    dataset_root=dataset_root,
                     dataset_type=dataset_type,
                     config_name_prefix=args.config_name_prefix,
                     user_overrides=user_overrides,
@@ -478,7 +544,7 @@ def main() -> int:
                     'commit': commit,
                     'dirty': dirty,
                     'dataset_type': dataset_type,
-                    'dataset_root': str(args.dataset_root),
+                    'dataset_root': str(dataset_root),
                     'dataset_path': config['DATASET']['PATH'],
                     'num_iterations': get_nested(config, 'TRAINING.NUM_ITERATIONS'),
                     'image_scale_factor': get_nested(config, 'DATASET.IMAGE_SCALE_FACTOR'),
@@ -506,7 +572,7 @@ def main() -> int:
         json.dump(scene_summary, f, indent=2)
     with open(suite_dir / 'summary_by_method.json', 'w') as f:
         json.dump(method_summary, f, indent=2)
-    write_markdown_summary(suite_dir / 'summary.md', scene_summary, method_summary)
+    write_markdown_summary(suite_dir / 'summary.md', records, scene_summary, config_dirs, suite_dir)
     print(f'\nbenchmark suite written to: {suite_dir}')
     return 0
 
