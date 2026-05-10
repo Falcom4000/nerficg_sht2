@@ -208,15 +208,17 @@ class Gaussians(torch.nn.Module):
             self._densification_info = self._densification_info[:, ordering].contiguous()
 
     def reset_densification_info(self):
-        self._densification_info = torch.zeros((2, self._means.shape[0]), dtype=torch.float32, device='cuda')
+        self._densification_info = torch.zeros((3, self._means.shape[0]), dtype=torch.float32, device='cuda')
 
-    def adaptive_density_control(self, grad_threshold: float, min_opacity: float, prune_large_gaussians: bool) -> None:
+    def adaptive_density_control(self, grad_threshold: float, abs_grad_threshold: float, min_opacity: float, prune_large_gaussians: bool) -> None:
         """Densify Gaussians and prune those that are not visible or too large."""
-        densification_mask = self.densification_info[1] >= grad_threshold * self.densification_info[0].clamp_min(1.0)
+        denominator = self.densification_info[0].clamp_min(1.0)
+        clone_candidate_mask = self.densification_info[1] >= grad_threshold * denominator
+        split_candidate_mask = self.densification_info[2] >= abs_grad_threshold * denominator
         is_small = torch.max(self._scales, dim=1).values <= math.log(self.percent_dense * self.training_cameras_extent)
 
         # duplicate small gaussians
-        duplicate_mask = densification_mask & is_small
+        duplicate_mask = clone_candidate_mask & is_small
         n_new_gaussians_duplicate = duplicate_mask.sum().item()
         duplicated_means = self._means[duplicate_mask]
         duplicated_sh_coefficients_0 = self._sh_coefficients_0[duplicate_mask]
@@ -226,7 +228,7 @@ class Gaussians(torch.nn.Module):
         duplicated_rotations = self._rotations[duplicate_mask]
 
         # split large gaussians
-        split_mask = densification_mask & ~is_small
+        split_mask = split_candidate_mask & ~is_small
         n_new_gaussians_split = 2 * split_mask.sum().item()
         split_scales = self._scales[split_mask].exp().expand(2, -1, -1).flatten(end_dim=1)
         split_rotations = self._rotations[split_mask].expand(2, -1, -1).flatten(end_dim=1)

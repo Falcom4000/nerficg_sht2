@@ -29,6 +29,7 @@ namespace faster_gs::rasterization::kernels::backward {
         const float3* __restrict__ cam_position,
         const uint* __restrict__ primitive_n_touched_tiles,
         const float2* __restrict__ grad_mean2d,
+        const float2* __restrict__ grad_mean2d_abs,
         const float* __restrict__ grad_conic,
         const float* __restrict__ grad_opacities,
         const float3* __restrict__ grad_colors,
@@ -181,6 +182,12 @@ namespace faster_gs::rasterization::kernels::backward {
                 dL_dmean2d.y * height
             );
             densification_info[n_primitives + primitive_idx] += length(dL_dmean2d_ndc);
+            const float2 dL_dmean2d_abs = grad_mean2d_abs[primitive_idx];
+            const float2 dL_dmean2d_abs_ndc = 0.5f * make_float2(
+                dL_dmean2d_abs.x * width,
+                dL_dmean2d_abs.y * height
+            );
+            densification_info[2 * n_primitives + primitive_idx] += length(dL_dmean2d_abs_ndc);
         }
 
         // mean3d camera space gradient from mean2d
@@ -265,6 +272,7 @@ namespace faster_gs::rasterization::kernels::backward {
         const uint* __restrict__ bucket_tile_index,
         const float4* __restrict__ bucket_color_transmittance,
         float2* __restrict__ grad_mean2d,
+        float2* __restrict__ grad_mean2d_abs,
         float* __restrict__ grad_conic,
         float* __restrict__ grad_opacity,
         float3* __restrict__ grad_colors,
@@ -315,6 +323,7 @@ namespace faster_gs::rasterization::kernels::backward {
 
         // gradient accumulation
         float2 dL_dmean2d_accum = {0.0f, 0.0f};
+        float2 dL_dmean2d_abs_accum = {0.0f, 0.0f};
         float3 dL_dconic_accum = {0.0f, 0.0f, 0.0f};
         float dL_dopacity_accum = 0.0f;
         float3 dL_dcolor_accum = {0.0f, 0.0f, 0.0f};
@@ -451,6 +460,7 @@ namespace faster_gs::rasterization::kernels::backward {
                 conic.y * delta.x + conic.z * delta.y
             );
             dL_dmean2d_accum += dL_dmean2d;
+            dL_dmean2d_abs_accum += make_float2(fabsf(dL_dmean2d.x), fabsf(dL_dmean2d.y));
 
             transmittance *= one_minus_alpha;
         }
@@ -459,6 +469,8 @@ namespace faster_gs::rasterization::kernels::backward {
         if (valid_primitive) {
             atomicAdd(&grad_mean2d[primitive_idx].x, dL_dmean2d_accum.x);
             atomicAdd(&grad_mean2d[primitive_idx].y, dL_dmean2d_accum.y);
+            atomicAdd(&grad_mean2d_abs[primitive_idx].x, dL_dmean2d_abs_accum.x);
+            atomicAdd(&grad_mean2d_abs[primitive_idx].y, dL_dmean2d_abs_accum.y);
             atomicAdd(&grad_conic[primitive_idx], dL_dconic_accum.x);
             atomicAdd(&grad_conic[n_primitives + primitive_idx], dL_dconic_accum.y);
             atomicAdd(&grad_conic[2 * n_primitives + primitive_idx], dL_dconic_accum.z);

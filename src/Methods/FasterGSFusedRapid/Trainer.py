@@ -19,7 +19,8 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
     DENSIFICATION_END_ITERATION=14_900,  # while official code states 15000, densification actually stops at 14900 there
     DENSIFICATION_INTERVAL=100,
     DENSIFICATION_GRAD_THRESHOLD=0.0002,
-    DENSIFICATION_PERCENT_DENSE=0.01,
+    DENSIFICATION_ABS_GRAD_THRESHOLD=0.0012,
+    DENSIFICATION_PERCENT_DENSE=0.001,
     OPACITY_RESET_INTERVAL=3_000,
     EXTRA_OPACITY_RESET_ITERATION=500,
     MORTON_ORDERING_INTERVAL=5000,  # lowering to 2500 or 1000 may improve performance when number of Gaussians is high
@@ -151,7 +152,12 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
             profile_start = torch.cuda.Event(enable_timing=True)
             profile_end = torch.cuda.Event(enable_timing=True)
             profile_start.record()
-        self.model.gaussians.adaptive_density_control(self.DENSIFICATION_GRAD_THRESHOLD, 0.005, iteration > self.OPACITY_RESET_INTERVAL)
+        self.model.gaussians.adaptive_density_control(
+            self.DENSIFICATION_GRAD_THRESHOLD,
+            self.DENSIFICATION_ABS_GRAD_THRESHOLD,
+            0.005,
+            iteration > self.OPACITY_RESET_INTERVAL,
+        )
         if iteration < self.DENSIFICATION_END_ITERATION:
             self.model.gaussians.reset_densification_info()
         if self.requires_empty_cache:
