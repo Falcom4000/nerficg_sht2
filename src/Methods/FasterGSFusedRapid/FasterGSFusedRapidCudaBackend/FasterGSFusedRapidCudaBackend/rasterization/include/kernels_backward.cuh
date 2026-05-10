@@ -460,7 +460,9 @@ namespace faster_gs::rasterization::kernels::backward {
                 conic.y * delta.x + conic.z * delta.y
             );
             dL_dmean2d_accum += dL_dmean2d;
-            dL_dmean2d_abs_accum += make_float2(fabsf(dL_dmean2d.x), fabsf(dL_dmean2d.y));
+            if (grad_mean2d_abs != nullptr) {
+                dL_dmean2d_abs_accum += make_float2(fabsf(dL_dmean2d.x), fabsf(dL_dmean2d.y));
+            }
 
             transmittance *= one_minus_alpha;
         }
@@ -469,8 +471,10 @@ namespace faster_gs::rasterization::kernels::backward {
         if (valid_primitive) {
             atomicAdd(&grad_mean2d[primitive_idx].x, dL_dmean2d_accum.x);
             atomicAdd(&grad_mean2d[primitive_idx].y, dL_dmean2d_accum.y);
-            atomicAdd(&grad_mean2d_abs[primitive_idx].x, dL_dmean2d_abs_accum.x);
-            atomicAdd(&grad_mean2d_abs[primitive_idx].y, dL_dmean2d_abs_accum.y);
+            if (grad_mean2d_abs != nullptr) {
+                atomicAdd(&grad_mean2d_abs[primitive_idx].x, dL_dmean2d_abs_accum.x);
+                atomicAdd(&grad_mean2d_abs[primitive_idx].y, dL_dmean2d_abs_accum.y);
+            }
             atomicAdd(&grad_conic[primitive_idx], dL_dconic_accum.x);
             atomicAdd(&grad_conic[n_primitives + primitive_idx], dL_dconic_accum.y);
             atomicAdd(&grad_conic[2 * n_primitives + primitive_idx], dL_dconic_accum.z);

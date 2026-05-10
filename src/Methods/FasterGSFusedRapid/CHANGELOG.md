@@ -1,5 +1,45 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.3.7 - 2026-05-10
+
+Implementation/config changes:
+
+- Skipped `grad_mean2d_abs_helper` allocation in the fused CUDA backward when `densification_info` is disabled.
+- Passed `nullptr` for `grad_mean2d_abs` after the densification window, so `blend_backward_cu` no longer computes or atomically accumulates absolute 2D mean-gradient values that will not be consumed.
+- Kept the densification-window path unchanged; FastGS/RapidGS absolute-gradient split semantics still use the same accumulation before `DENSIFICATION_END_ITERATION`.
+- Added `configs/fastergsfusedrapid_v0_3_7_skip_absgrad_after_density/bicycle.yaml`, copied from v0.3.6 with only experiment metadata changed.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_3_7_skip_absgrad_after_density \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_3_7_skip_absgrad_after_density_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsfusedrapid-v0.3.7 | bicycle | 185.54s | 1,245,324 | 25.6219 | 0.7584 | 0.2947 | 4.63GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 113,979 -> 138,888 | 0.7475 | 0.4522 | 1.1934 | 0.2849 | 0.0000 | 2.6781 |
+| 14000-14100 | 1,354,027 -> 1,354,001 | 1.1089 | 0.4536 | 4.1487 | 0.3756 | 0.0000 | 6.0868 |
+| 25000-25100 | 1,248,913 -> 1,248,913 | 1.0806 | 0.4522 | 3.8425 | 0.0000 | 0.0000 | 5.3753 |
+
+Interpretation:
+
+- The change is semantically neutral for FastGS/RapidGS density control because the absolute mean-gradient buffer is still allocated and accumulated for all iterations that can consume `densification_info`.
+- Late backward improved slightly (`3.8807ms -> 3.8425ms` at `25000-25100`), while train time stayed effectively flat versus v0.3.6 (`185.31s -> 185.54s`). This is worth keeping as a small hot-path cleanup, but the dominant cost is still normal backward math and gradient atomics.
+- The optimization follows the CUDA guide's profile-and-iterate flow and removes unused global-memory/atomic work in the measured hot path rather than changing training parameters.
+
 ## fastergsfusedrapid-v0.3.6 - 2026-05-10
 
 Implementation/config changes:
