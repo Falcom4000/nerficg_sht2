@@ -1,5 +1,47 @@
 # FasterGSBasisRapid Changelog
 
+## fastergsbasisrapid-v0.7.0 - 2026-05-10
+
+Implementation/config changes:
+
+- Added block-level gradient reductions inside `blend_backward_cu`.
+- For each tile/Gaussian pair, color, opacity, conic, signed 2D mean, and absolute 2D mean gradients are first summed across the 16x16 tile block.
+- The block leader then issues global atomics, reducing the number of global atomic updates while keeping the same per-pixel gradient formulas.
+- Added `configs/fastergsbasisrapid_v0_7_block_reduce/bicycle.yaml`, copied from v0.6 and bumped to `fastergsbasisrapid-v0.7.0`.
+- Rebuilt and installed `FasterGSBasisRapidCudaBackend` with CUDA 12.8 after the kernel change.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSBasisRapid \
+  --config-dir configs/fastergsbasisrapid_v0_7_block_reduce \
+  --repeats 1 \
+  --suite-name fastergsbasisrapid_v0_7_block_reduce_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | image scale | train time | training iteration time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsbasisrapid-v0.7.0 | bicycle | 0.3234937323 | 330.81s | 299.40s | 1,501,612 | 25.7358 | 0.7660 | 0.2789 | 5.47GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 131,709 -> 163,458 | 0.6988 | 0.4362 | 2.6747 | 0.2635 | 0.9166 | 4.9897 |
+| 14000-14100 | 1,710,710 -> 1,710,530 | 1.2094 | 0.4286 | 8.4520 | 0.4614 | 1.8747 | 12.4261 |
+| 25000-25100 | 1,507,422 -> 1,507,422 | 1.1434 | 0.4275 | 8.1018 | 0.0000 | 0.1434 | 9.8161 |
+
+Interpretation:
+
+- Block-level gradient reduction reduces train time from `521.89s` to `330.81s` with quality and final Gaussian count stable.
+- `training_iteration` time drops from `491s` to `299s`.
+- Backward improves substantially: `12.07 -> 2.67ms` in the early window, `14.65 -> 8.45ms` in the 14k window, and `13.00 -> 8.10ms` in the late window.
+- The remaining training-loop gap to RapidGS is mostly the mid/late backward path plus NeRFICG save/preparation overhead; compared to RapidGS, 14k and 25k backward are still about `1.8x` slower.
+
 ## fastergsbasisrapid-v0.6.0 - 2026-05-10
 
 Implementation/config changes:

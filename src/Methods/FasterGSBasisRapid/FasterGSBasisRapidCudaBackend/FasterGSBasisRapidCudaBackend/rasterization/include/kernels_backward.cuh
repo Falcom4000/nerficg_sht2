@@ -11,6 +11,59 @@ namespace cg = cooperative_groups;
 
 namespace faster_gs::rasterization::kernels::backward {
 
+    __device__ inline void block_reduce_gradient_sums(
+        cg::thread_block& block,
+        const uint thread_rank,
+        float (&scratch)[11][config::block_size_blend],
+        float& color_x,
+        float& color_y,
+        float& color_z,
+        float& opacity,
+        float& conic_x,
+        float& conic_y,
+        float& conic_z,
+        float& mean_x,
+        float& mean_y,
+        float& mean_abs_x,
+        float& mean_abs_y)
+    {
+        scratch[0][thread_rank] = color_x;
+        scratch[1][thread_rank] = color_y;
+        scratch[2][thread_rank] = color_z;
+        scratch[3][thread_rank] = opacity;
+        scratch[4][thread_rank] = conic_x;
+        scratch[5][thread_rank] = conic_y;
+        scratch[6][thread_rank] = conic_z;
+        scratch[7][thread_rank] = mean_x;
+        scratch[8][thread_rank] = mean_y;
+        scratch[9][thread_rank] = mean_abs_x;
+        scratch[10][thread_rank] = mean_abs_y;
+        block.sync();
+
+        for (uint stride = config::block_size_blend / 2; stride > 0; stride >>= 1) {
+            if (thread_rank < stride) {
+                #pragma unroll
+                for (int i = 0; i < 11; ++i) {
+                    scratch[i][thread_rank] += scratch[i][thread_rank + stride];
+                }
+            }
+            block.sync();
+        }
+
+        color_x = scratch[0][0];
+        color_y = scratch[1][0];
+        color_z = scratch[2][0];
+        opacity = scratch[3][0];
+        conic_x = scratch[4][0];
+        conic_y = scratch[5][0];
+        conic_z = scratch[6][0];
+        mean_x = scratch[7][0];
+        mean_y = scratch[8][0];
+        mean_abs_x = scratch[9][0];
+        mean_abs_y = scratch[10][0];
+        block.sync();
+    }
+
     __global__ void preprocess_backward_cu(
         const float3* __restrict__ means,
         const float3* __restrict__ scales,
@@ -263,6 +316,7 @@ namespace faster_gs::rasterization::kernels::backward {
         __shared__ float2 collected_mean2d[config::block_size_blend];
         __shared__ float4 collected_conic_opacity[config::block_size_blend];
         __shared__ float3 collected_color[config::block_size_blend];
+        __shared__ float gradient_reduce_scratch[11][config::block_size_blend];
         // initialize local storage
         const float3 background = bg_color[0];
         float3 color_pixel_residual, grad_color_pixel;
@@ -301,7 +355,19 @@ namespace faster_gs::rasterization::kernels::backward {
             }
             block.sync();
             const int current_batch_size = min(config::block_size_blend, n_points_remaining);
-            for (int j = 0; !done && j < current_batch_size; ++j) {
+            for (int j = 0; j < current_batch_size; ++j) {
+                float grad_color_x_sum = 0.0f;
+                float grad_color_y_sum = 0.0f;
+                float grad_color_z_sum = 0.0f;
+                float grad_opacity_sum = 0.0f;
+                float grad_conic_x_sum = 0.0f;
+                float grad_conic_y_sum = 0.0f;
+                float grad_conic_z_sum = 0.0f;
+                float grad_mean_x_sum = 0.0f;
+                float grad_mean_y_sum = 0.0f;
+                float grad_mean_abs_x_sum = 0.0f;
+                float grad_mean_abs_y_sum = 0.0f;
+                bool active = !done;
                 // evaluate current Gaussian at pixel
                 const float4 conic_opacity = collected_conic_opacity[j];
                 const float3 conic = make_float3(conic_opacity);
@@ -309,10 +375,10 @@ namespace faster_gs::rasterization::kernels::backward {
                 const float2 delta = collected_mean2d[j] - pixel;
                 float exponent = -0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) - conic.y * delta.x * delta.y;
                 if (!config::original_stability_measures) exponent = fminf(exponent, 0.0f);
-                else if (exponent > 0.0f) continue;
+                else if (exponent > 0.0f) active = false;
                 const float gaussian = expf(exponent);
                 const float fragment_alpha = opacity * gaussian;
-                if (fragment_alpha < config::min_alpha_threshold) continue;
+                if (fragment_alpha < config::min_alpha_threshold) active = false;
                 const float alpha = config::original_stability_measures ? fminf(fragment_alpha, config::max_fragment_alpha) : fragment_alpha;
 
                 // compute remaining transmittance after this fragment
@@ -320,9 +386,9 @@ namespace faster_gs::rasterization::kernels::backward {
                 const float next_transmittance = transmittance * one_minus_alpha;
 
                 // early stopping as in original 3DGS, i.e., before blending (if config::original_stability_measures)
-                if (config::original_stability_measures && next_transmittance < config::transmittance_threshold) {
+                if (active && config::original_stability_measures && next_transmittance < config::transmittance_threshold) {
                     done = true;
-                    continue;
+                    active = false;
                 }
 
                 // blending weight
@@ -330,51 +396,82 @@ namespace faster_gs::rasterization::kernels::backward {
                 const uint primitive_idx = collected_primitive_idx[j];
                 const float3 color_unclamped = collected_color[j];
 
-                // color gradient
-                const float3 dL_dcolor = blending_weight * grad_color_pixel;
-                if (color_unclamped.x >= 0.0f) atomicAdd(&grad_colors[primitive_idx], dL_dcolor.x);
-                if (color_unclamped.y >= 0.0f) atomicAdd(&grad_colors[n_primitives + primitive_idx], dL_dcolor.y);
-                if (color_unclamped.z >= 0.0f) atomicAdd(&grad_colors[2 * n_primitives + primitive_idx], dL_dcolor.z);
+                if (active) {
+                    // color gradient
+                    const float3 dL_dcolor = blending_weight * grad_color_pixel;
+                    grad_color_x_sum = color_unclamped.x >= 0.0f ? dL_dcolor.x : 0.0f;
+                    grad_color_y_sum = color_unclamped.y >= 0.0f ? dL_dcolor.y : 0.0f;
+                    grad_color_z_sum = color_unclamped.z >= 0.0f ? dL_dcolor.z : 0.0f;
 
-                const float3 color = fmaxf(color_unclamped, 0.0f);
-                color_pixel_residual -= blending_weight * color;
+                    const float3 color = fmaxf(color_unclamped, 0.0f);
+                    color_pixel_residual -= blending_weight * color;
 
-                // alpha gradient
-                const float one_minus_alpha_rcp = 1.0f / (config::original_stability_measures ? one_minus_alpha : fmaxf(one_minus_alpha, config::one_minus_alpha_eps));
-                const float dL_dalpha_from_color = dot(transmittance * color - color_pixel_residual * one_minus_alpha_rcp, grad_color_pixel);
-                const float dL_dalpha_from_alpha = grad_alpha_common * one_minus_alpha_rcp;
-                const float dL_dalpha = dL_dalpha_from_color + dL_dalpha_from_alpha;
+                    // alpha gradient
+                    const float one_minus_alpha_rcp = 1.0f / (config::original_stability_measures ? one_minus_alpha : fmaxf(one_minus_alpha, config::one_minus_alpha_eps));
+                    const float dL_dalpha_from_color = dot(transmittance * color - color_pixel_residual * one_minus_alpha_rcp, grad_color_pixel);
+                    const float dL_dalpha_from_alpha = grad_alpha_common * one_minus_alpha_rcp;
+                    const float dL_dalpha = dL_dalpha_from_color + dL_dalpha_from_alpha;
 
-                // opacity gradient
-                const float dL_dopacity = gaussian * dL_dalpha;
-                atomicAdd(&grad_opacity[primitive_idx], dL_dopacity);
+                    // opacity gradient
+                    grad_opacity_sum = gaussian * dL_dalpha;
 
-                // conic and mean2d gradient
-                const float gaussian_grad_helper = -alpha * dL_dalpha;
-                const float3 dL_dconic = 0.5f * gaussian_grad_helper * make_float3(
-                    delta.x * delta.x,
-                    delta.x * delta.y,
-                    delta.y * delta.y
+                    // conic and mean2d gradient
+                    const float gaussian_grad_helper = -alpha * dL_dalpha;
+                    const float3 dL_dconic = 0.5f * gaussian_grad_helper * make_float3(
+                        delta.x * delta.x,
+                        delta.x * delta.y,
+                        delta.y * delta.y
+                    );
+                    grad_conic_x_sum = dL_dconic.x;
+                    grad_conic_y_sum = dL_dconic.y;
+                    grad_conic_z_sum = dL_dconic.z;
+                    const float2 dL_dmean2d = gaussian_grad_helper * make_float2(
+                        conic.x * delta.x + conic.y * delta.y,
+                        conic.y * delta.x + conic.z * delta.y
+                    );
+                    grad_mean_x_sum = dL_dmean2d.x;
+                    grad_mean_y_sum = dL_dmean2d.y;
+                    grad_mean_abs_x_sum = fabsf(dL_dmean2d.x);
+                    grad_mean_abs_y_sum = fabsf(dL_dmean2d.y);
+
+                    // update transmittance
+                    transmittance = next_transmittance;
+
+                    // early stopping (if not config::original_stability_measures)
+                    if (!config::original_stability_measures && transmittance < config::transmittance_threshold) {
+                        done = true;
+                    }
+                }
+
+                block_reduce_gradient_sums(
+                    block,
+                    thread_rank,
+                    gradient_reduce_scratch,
+                    grad_color_x_sum,
+                    grad_color_y_sum,
+                    grad_color_z_sum,
+                    grad_opacity_sum,
+                    grad_conic_x_sum,
+                    grad_conic_y_sum,
+                    grad_conic_z_sum,
+                    grad_mean_x_sum,
+                    grad_mean_y_sum,
+                    grad_mean_abs_x_sum,
+                    grad_mean_abs_y_sum
                 );
-                atomicAdd(&grad_conic[primitive_idx], dL_dconic.x);
-                atomicAdd(&grad_conic[n_primitives + primitive_idx], dL_dconic.y);
-                atomicAdd(&grad_conic[2 * n_primitives + primitive_idx], dL_dconic.z);
-                const float2 dL_dmean2d = gaussian_grad_helper * make_float2(
-                    conic.x * delta.x + conic.y * delta.y,
-                    conic.y * delta.x + conic.z * delta.y
-                );
-                atomicAdd(&grad_mean2d[primitive_idx].x, dL_dmean2d.x);
-                atomicAdd(&grad_mean2d[primitive_idx].y, dL_dmean2d.y);
-                atomicAdd(&grad_mean2d_abs[primitive_idx].x, fabsf(dL_dmean2d.x));
-                atomicAdd(&grad_mean2d_abs[primitive_idx].y, fabsf(dL_dmean2d.y));
 
-                // update transmittance
-                transmittance = next_transmittance;
-
-                // early stopping (if not config::original_stability_measures)
-                if (!config::original_stability_measures && transmittance < config::transmittance_threshold) {
-                    done = true;
-                    continue;
+                if (thread_rank == 0) {
+                    if (grad_color_x_sum != 0.0f) atomicAdd(&grad_colors[primitive_idx], grad_color_x_sum);
+                    if (grad_color_y_sum != 0.0f) atomicAdd(&grad_colors[n_primitives + primitive_idx], grad_color_y_sum);
+                    if (grad_color_z_sum != 0.0f) atomicAdd(&grad_colors[2 * n_primitives + primitive_idx], grad_color_z_sum);
+                    if (grad_opacity_sum != 0.0f) atomicAdd(&grad_opacity[primitive_idx], grad_opacity_sum);
+                    if (grad_conic_x_sum != 0.0f) atomicAdd(&grad_conic[primitive_idx], grad_conic_x_sum);
+                    if (grad_conic_y_sum != 0.0f) atomicAdd(&grad_conic[n_primitives + primitive_idx], grad_conic_y_sum);
+                    if (grad_conic_z_sum != 0.0f) atomicAdd(&grad_conic[2 * n_primitives + primitive_idx], grad_conic_z_sum);
+                    if (grad_mean_x_sum != 0.0f) atomicAdd(&grad_mean2d[primitive_idx].x, grad_mean_x_sum);
+                    if (grad_mean_y_sum != 0.0f) atomicAdd(&grad_mean2d[primitive_idx].y, grad_mean_y_sum);
+                    if (grad_mean_abs_x_sum != 0.0f) atomicAdd(&grad_mean2d_abs[primitive_idx].x, grad_mean_abs_x_sum);
+                    if (grad_mean_abs_y_sum != 0.0f) atomicAdd(&grad_mean2d_abs[primitive_idx].y, grad_mean_abs_y_sum);
                 }
             }
         }
