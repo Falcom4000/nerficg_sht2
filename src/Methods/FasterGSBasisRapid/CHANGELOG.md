@@ -1,5 +1,46 @@
 # FasterGSBasisRapid Changelog
 
+## fastergsbasisrapid-v0.3.0 - 2026-05-10
+
+Implementation/config changes:
+
+- Added an optional CUDA event profiler for `FasterGSBasisRapid` training.
+- The profiler records three 1-based iteration windows by default: `[1000, 1100)`, `[14000, 14100)`, and `[25000, 25100)`.
+- Per window, it writes averaged `render`, `loss`, `backward`, `densify_prune`, `optimizer`, and `total` milliseconds to `profile_windows.csv` in the run output directory.
+- The profiler also records first/last/min/max Gaussian counts observed in each window.
+- Added `configs/fastergsbasisrapid_v0_3_profile/bicycle.yaml` as a new profiling config, leaving the v0.2.1 benchmark config unchanged.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSBasisRapid \
+  --config-dir configs/fastergsbasisrapid_v0_3_profile \
+  --repeats 1 \
+  --suite-name fastergsbasisrapid_v0_3_profile_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | image scale | train time | n_gaussians | PSNR | SSIM | LPIPS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsbasisrapid-v0.3.0 | bicycle | 0.3234937323 | 639.67s | 1,508,992 | 25.7132 | 0.7662 | 0.2777 |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 131,084 -> 162,799 | 1.0474 | 3.2728 | 12.2262 | 0.5415 | 0.9921 | 18.0800 |
+| 14000-14100 | 1,720,481 -> 1,720,321 | 2.4021 | 3.0632 | 14.9785 | 0.8579 | 1.9584 | 23.2601 |
+| 25000-25100 | 1,514,775 -> 1,514,775 | 2.2022 | 2.6490 | 13.3041 | 0.0000 | 0.1441 | 18.2994 |
+
+Interpretation:
+
+- Quality and final Gaussian count remain close to the RapidGS `train_big.sh` reference.
+- Compared with RapidGS bicycle profiling, `loss` is about 5-6x slower and `backward` is about 3x slower in the same iteration windows.
+- The next optimization target is therefore the training loss/backward path, not densification parameters.
+
 ## fastergsbasisrapid-v0.2.1 - 2026-05-10
 
 Implementation/config changes:

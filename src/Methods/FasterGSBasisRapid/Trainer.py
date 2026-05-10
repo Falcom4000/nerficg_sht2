@@ -35,6 +35,10 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
     FASTGS_PRUNING_INTERVAL=3_000,
     FASTGS_PRUNING_MIN_OPACITY=0.1,
     FASTGS_PRUNING_SCORE_THRESHOLD=0.9,
+    PROFILER=Framework.ConfigParameterList(
+        ACTIVE=False,
+        WINDOWS=[[1000, 1100], [14000, 14100], [25000, 25100]],
+    ),
     LOSS=Framework.ConfigParameterList(
         LAMBDA_L1=0.8,  # weight for the per-pixel L1 loss on the rgb image
         LAMBDA_DSSIM=0.2,  # weight for the DSSIM loss on the rgb image
@@ -67,6 +71,54 @@ class FasterGSBasisRapidTrainer(GuiTrainer):
         super().__init__(**kwargs)
         self.train_sampler = None
         self.loss = FasterGSBasisRapidLoss(loss_config=self.LOSS)
+        self.profile_windows = self._build_profile_windows()
+
+    def _build_profile_windows(self) -> list[dict]:
+        """Build profiler window state from config."""
+        if not self.PROFILER.ACTIVE:
+            return []
+
+        windows = []
+        for window in self.PROFILER.WINDOWS:
+            if len(window) != 2:
+                raise Framework.TrainingError(f'invalid profiler window {window}; expected [start, end]')
+            start, end = int(window[0]), int(window[1])
+            if start < 0 or end <= start:
+                raise Framework.TrainingError(f'invalid profiler window {window}; expected 0 <= start < end')
+            windows.append({
+                'label': f'{start}-{end}',
+                'start': start,
+                'end': end,
+                'render': 0.0,
+                'loss': 0.0,
+                'backward': 0.0,
+                'densify_prune': 0.0,
+                'optimizer': 0.0,
+                'count': 0,
+                'n_gaussians_first': None,
+                'n_gaussians_last': None,
+                'n_gaussians_min': None,
+                'n_gaussians_max': None,
+            })
+        return windows
+
+    def _profile_window(self, iteration: int) -> dict | None:
+        """Return active profiler window for the current 1-based optimization step."""
+        optimization_step = iteration + 1
+        for window in self.profile_windows:
+            if window['start'] <= optimization_step < window['end']:
+                return window
+        return None
+
+    def _record_profile_gaussian_count(self, window: dict) -> None:
+        n_gaussians = int(self.model.gaussians.means.shape[0])
+        if window['n_gaussians_first'] is None:
+            window['n_gaussians_first'] = n_gaussians
+            window['n_gaussians_min'] = n_gaussians
+            window['n_gaussians_max'] = n_gaussians
+        window['n_gaussians_last'] = n_gaussians
+        window['n_gaussians_min'] = min(window['n_gaussians_min'], n_gaussians)
+        window['n_gaussians_max'] = max(window['n_gaussians_max'], n_gaussians)
 
     @staticmethod
     def _compose_gt(view, bg_color: torch.Tensor) -> torch.Tensor:
@@ -165,6 +217,11 @@ class FasterGSBasisRapidTrainer(GuiTrainer):
     @torch.no_grad()
     def densify(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Apply densification."""
+        profile_window = self._profile_window(iteration)
+        if profile_window is not None:
+            profile_start = torch.cuda.Event(enable_timing=True)
+            profile_end = torch.cuda.Event(enable_timing=True)
+            profile_start.record()
         importance_score, pruning_score = self.compute_fastgs_scores(dataset, compute_importance=True)
         self.model.gaussians.adaptive_density_control(
             self.DENSIFICATION_GRAD_THRESHOLD,
@@ -179,11 +236,21 @@ class FasterGSBasisRapidTrainer(GuiTrainer):
             self.model.gaussians.reset_densification_info()
         if self.requires_empty_cache:
             torch.cuda.empty_cache()
+        if profile_window is not None:
+            profile_end.record()
+            torch.cuda.synchronize()
+            profile_window['densify_prune'] += profile_start.elapsed_time(profile_end)
+            self._record_profile_gaussian_count(profile_window)
 
     @training_callback(priority=100, start_iteration='FASTGS_PRUNING_START_ITERATION', end_iteration='FASTGS_PRUNING_END_ITERATION', iteration_stride='FASTGS_PRUNING_INTERVAL')
     @torch.no_grad()
-    def prune_multiview_inconsistent(self, _: int, dataset: 'BaseDataset') -> None:
+    def prune_multiview_inconsistent(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Apply FastGS multi-view consistent pruning after densification."""
+        profile_window = self._profile_window(iteration)
+        if profile_window is not None:
+            profile_start = torch.cuda.Event(enable_timing=True)
+            profile_end = torch.cuda.Event(enable_timing=True)
+            profile_start.record()
         _, pruning_score = self.compute_fastgs_scores(dataset, compute_importance=False)
         self.model.gaussians.prune_by_multiview_score(
             min_opacity=self.FASTGS_PRUNING_MIN_OPACITY,
@@ -192,6 +259,11 @@ class FasterGSBasisRapidTrainer(GuiTrainer):
         )
         if self.requires_empty_cache:
             torch.cuda.empty_cache()
+        if profile_window is not None:
+            profile_end.record()
+            torch.cuda.synchronize()
+            profile_window['densify_prune'] += profile_start.elapsed_time(profile_end)
+            self._record_profile_gaussian_count(profile_window)
 
     @training_callback(priority=90, start_iteration='OPACITY_RESET_INTERVAL', end_iteration='DENSIFICATION_END_ITERATION', iteration_stride='OPACITY_RESET_INTERVAL')
     @torch.no_grad()
@@ -211,6 +283,11 @@ class FasterGSBasisRapidTrainer(GuiTrainer):
     @training_callback(priority=80)
     def training_iteration(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Performs a training step without actually doing the optimizer step."""
+        profile_window = self._profile_window(iteration)
+        if profile_window is not None:
+            profile_events = [torch.cuda.Event(enable_timing=True) for _ in range(6)]
+            profile_events[0].record()
+            self._record_profile_gaussian_count(profile_window)
         # init modes
         self.model.train()
         dataset.train()
@@ -224,15 +301,23 @@ class FasterGSBasisRapidTrainer(GuiTrainer):
             view=view,
             update_densification_info=iteration < self.DENSIFICATION_END_ITERATION,
         )
+        if profile_window is not None:
+            profile_events[1].record()
         # calculate loss
         # compose gt with background color if needed  # FIXME: integrate into data model
         rgb_gt = view.rgb
         if (alpha_gt := view.alpha) is not None:
             rgb_gt = apply_background_color(rgb_gt, alpha_gt, view.camera.background_color)
         loss = self.loss(image, rgb_gt)
+        if profile_window is not None:
+            profile_events[2].record()
         # backward
         loss.backward()
+        if profile_window is not None:
+            profile_events[3].record()
         # optimizer step
+        if profile_window is not None:
+            profile_events[4].record()
         self.model.gaussians.optimizer_step(
             optimization_step=iteration + 1,
             total_iterations=self.NUM_ITERATIONS,
@@ -242,6 +327,15 @@ class FasterGSBasisRapidTrainer(GuiTrainer):
             final_update_start_iteration=self.OPTIMIZER.FINAL_UPDATE_START_ITERATION,
             final_update_interval=self.OPTIMIZER.FINAL_UPDATE_INTERVAL,
         )
+        if profile_window is not None:
+            profile_events[5].record()
+            torch.cuda.synchronize()
+            profile_window['render'] += profile_events[0].elapsed_time(profile_events[1])
+            profile_window['loss'] += profile_events[1].elapsed_time(profile_events[2])
+            profile_window['backward'] += profile_events[2].elapsed_time(profile_events[3])
+            profile_window['optimizer'] += profile_events[4].elapsed_time(profile_events[5])
+            profile_window['count'] += 1
+            self._record_profile_gaussian_count(profile_window)
 
     @training_callback(active='WANDB.ACTIVATE', priority=10, iteration_stride='WANDB.INTERVAL')
     @torch.no_grad()
@@ -265,3 +359,47 @@ class FasterGSBasisRapidTrainer(GuiTrainer):
                 f'\n'
                 f'N_Gaussians:{n_gaussians}'
             )
+
+    @post_training_callback(priority=900)
+    @torch.no_grad()
+    def write_profile_windows(self, *_) -> None:
+        """Write CUDA event profiler window averages."""
+        if not self.profile_windows:
+            return
+
+        columns = [
+            'window', 'start_iteration', 'end_iteration_exclusive', 'count',
+            'n_gaussians_first', 'n_gaussians_last', 'n_gaussians_min', 'n_gaussians_max',
+            'render_ms', 'loss_ms', 'backward_ms', 'densify_prune_ms', 'optimizer_ms', 'total_ms',
+        ]
+        lines = [','.join(columns)]
+        for window in self.profile_windows:
+            count = window['count']
+            if count > 0:
+                values = {key: window[key] / count for key in ['render', 'loss', 'backward', 'densify_prune', 'optimizer']}
+                total = sum(values.values())
+            else:
+                values = {key: 0.0 for key in ['render', 'loss', 'backward', 'densify_prune', 'optimizer']}
+                total = 0.0
+
+            row = [
+                window['label'],
+                str(window['start']),
+                str(window['end']),
+                str(count),
+                str(window['n_gaussians_first'] or ''),
+                str(window['n_gaussians_last'] or ''),
+                str(window['n_gaussians_min'] or ''),
+                str(window['n_gaussians_max'] or ''),
+                f"{values['render']:.6f}",
+                f"{values['loss']:.6f}",
+                f"{values['backward']:.6f}",
+                f"{values['densify_prune']:.6f}",
+                f"{values['optimizer']:.6f}",
+                f'{total:.6f}',
+            ]
+            lines.append(','.join(row))
+
+        profile_path = self.output_directory / 'profile_windows.csv'
+        profile_path.write_text('\n'.join(lines) + '\n')
+        Logger.log_info(f'wrote profiler window summary to {profile_path}')
