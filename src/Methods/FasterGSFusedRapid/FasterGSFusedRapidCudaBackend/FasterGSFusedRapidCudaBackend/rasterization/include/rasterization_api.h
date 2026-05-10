@@ -29,6 +29,30 @@ namespace faster_gs::rasterization {
         const float current_mean_lr,
         const int adam_step_count);
 
+    std::tuple<torch::Tensor, torch::Tensor>
+    forward_image_wrapper(
+        const torch::Tensor& means,
+        const torch::Tensor& scales,
+        const torch::Tensor& rotations,
+        const torch::Tensor& opacities,
+        const torch::Tensor& sh_coefficients_0,
+        const torch::Tensor& sh_coefficients_rest,
+        const torch::Tensor& metric_map,
+        const torch::Tensor& w2c,
+        const torch::Tensor& cam_position,
+        const torch::Tensor& bg_color,
+        const int active_sh_bases,
+        const int width,
+        const int height,
+        const float focal_x,
+        const float focal_y,
+        const float center_x,
+        const float center_y,
+        const float near_plane,
+        const float far_plane,
+        const float current_mean_lr,
+        const int adam_step_count);
+
     void backward_wrapper(
         torch::Tensor& densification_info,
         torch::Tensor& means,

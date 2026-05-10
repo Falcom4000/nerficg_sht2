@@ -5,5 +5,6 @@ namespace rasterization_api = faster_gs::rasterization;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("forward", &rasterization_api::forward_wrapper);
+    m.def("forward_image", &rasterization_api::forward_image_wrapper);
     m.def("backward", &rasterization_api::backward_wrapper);
 }

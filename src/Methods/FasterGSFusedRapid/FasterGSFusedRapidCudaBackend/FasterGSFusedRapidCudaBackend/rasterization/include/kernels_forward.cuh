@@ -357,6 +357,7 @@ namespace faster_gs::rasterization::kernels::forward {
         tile_n_buckets[tile_idx] = n_buckets;
     }
 
+    template <bool store_backward_buffers>
     __global__ void __launch_bounds__(config::block_size_blend) blend_cu(
         const uint2* __restrict__ tile_instance_ranges,
         const uint* __restrict__ tile_buckets_offset,
@@ -388,11 +389,14 @@ namespace faster_gs::rasterization::kernels::forward {
         const uint tile_idx = group_index.y * grid_width + group_index.x;
         const uint2 tile_range = tile_instance_ranges[tile_idx];
         const int n_points_total = tile_range.y - tile_range.x;
-        // setup bucket to tile mapping
-        const int n_buckets = div_round_up(n_points_total, 32);
-        uint bucket_offset = (tile_idx == 0) ? 0 : tile_buckets_offset[tile_idx - 1];
-        for (int n_buckets_remaining = n_buckets, current_bucket_idx = thread_rank; n_buckets_remaining > 0; n_buckets_remaining -= config::block_size_blend, current_bucket_idx += config::block_size_blend) {
-            if (current_bucket_idx < n_buckets) bucket_tile_index[bucket_offset + current_bucket_idx] = tile_idx;
+        uint bucket_offset = 0;
+        if constexpr (store_backward_buffers) {
+            // setup bucket to tile mapping
+            const int n_buckets = div_round_up(n_points_total, 32);
+            bucket_offset = (tile_idx == 0) ? 0 : tile_buckets_offset[tile_idx - 1];
+            for (int n_buckets_remaining = n_buckets, current_bucket_idx = thread_rank; n_buckets_remaining > 0; n_buckets_remaining -= config::block_size_blend, current_bucket_idx += config::block_size_blend) {
+                if (current_bucket_idx < n_buckets) bucket_tile_index[bucket_offset + current_bucket_idx] = tile_idx;
+            }
         }
         // setup shared memory
         __shared__ uint collected_primitive_idx[config::block_size_blend];
@@ -420,10 +424,12 @@ namespace faster_gs::rasterization::kernels::forward {
             const int current_batch_size = min(config::block_size_blend, n_points_remaining);
             for (int j = 0; !done && j < current_batch_size; ++j) {
                 // store current color and transmittance every 32 Gaussians
+                if constexpr (store_backward_buffers) {
                 if (j % 32 == 0) {
                     const float4 current_color_transmittance = make_float4(color_pixel, transmittance);
                     bucket_color_transmittance[bucket_offset * config::block_size_blend + thread_rank] = current_color_transmittance;
                     bucket_offset++;
+                }
                 }
 
                 // track the number of processed Gaussians
@@ -470,14 +476,18 @@ namespace faster_gs::rasterization::kernels::forward {
             image[pixel_idx] = color_pixel.x;
             image[n_pixels + pixel_idx] = color_pixel.y;
             image[2 * n_pixels + pixel_idx] = color_pixel.z;
-            tile_final_transmittances[pixel_idx] = transmittance;
-            tile_n_processed[pixel_idx] = n_processed_and_used;
+            if constexpr (store_backward_buffers) {
+                tile_final_transmittances[pixel_idx] = transmittance;
+                tile_n_processed[pixel_idx] = n_processed_and_used;
+            }
         }
-        // max reduce the number of processed Gaussians per tile
-        typedef cub::BlockReduce<uint, config::tile_width, cub::BLOCK_REDUCE_WARP_REDUCTIONS, config::tile_height> BlockReduce;
-        __shared__ typename BlockReduce::TempStorage temp_storage;
-        n_processed_and_used = BlockReduce(temp_storage).Reduce(n_processed_and_used, MaxUint());
-        if (thread_rank == 0) tile_max_n_processed[tile_idx] = n_processed_and_used;
+        if constexpr (store_backward_buffers) {
+            // max reduce the number of processed Gaussians per tile
+            typedef cub::BlockReduce<uint, config::tile_width, cub::BLOCK_REDUCE_WARP_REDUCTIONS, config::tile_height> BlockReduce;
+            __shared__ typename BlockReduce::TempStorage temp_storage;
+            n_processed_and_used = BlockReduce(temp_storage).Reduce(n_processed_and_used, MaxUint());
+            if (thread_rank == 0) tile_max_n_processed[tile_idx] = n_processed_and_used;
+        }
     }
 
 }

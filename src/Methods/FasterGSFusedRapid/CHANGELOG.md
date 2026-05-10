@@ -1,5 +1,45 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.3.6 - 2026-05-10
+
+Implementation/config changes:
+
+- Added a fused CUDA `forward_image` path for no-grad FastGS score, metric-count, and inference renders.
+- Templated the blend kernel so training renders still store backward-only bucket/transmittance/processed-count buffers, while no-grad image renders skip those allocations and writes.
+- Exposed `_C.forward_image` through `rasterize_forward()`; `diff_rasterize()` and the fused backward/Adam training path are unchanged.
+- Added `configs/fastergsfusedrapid_v0_3_6_forward_image/bicycle.yaml`, copied from v0.3.5 with only experiment metadata changed.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_3_6_forward_image \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_3_6_forward_image_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsfusedrapid-v0.3.6 | bicycle | 185.31s | 1,250,930 | 25.5908 | 0.7576 | 0.2947 | 4.64GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 113,823 -> 138,439 | 0.7965 | 0.4590 | 1.2405 | 0.2979 | 0.0000 | 2.7939 |
+| 14000-14100 | 1,360,824 -> 1,360,813 | 1.1020 | 0.4542 | 4.1620 | 0.3694 | 0.0000 | 6.0876 |
+| 25000-25100 | 1,254,523 -> 1,254,523 | 1.0909 | 0.4563 | 3.8807 | 0.0000 | 0.0000 | 5.4278 |
+
+Interpretation:
+
+- Quality and Gaussian count stay in the same normal range as v0.3.5, so the forward-image API did not perturb training semantics.
+- The score/pruning windows improve slightly (`14000-14100` densify/prune `0.3919ms -> 0.3694ms`), but total train time remains effectively flat (`185.83s -> 185.31s`). The remaining runtime is still dominated by normal training backward, not no-grad FastGS score rendering.
+- This version is still about `20.0%` faster than the RapidGS bicycle reference (`231.77s`) with better PSNR/SSIM and worse LPIPS.
+
 ## fastergsfusedrapid-v0.3.5 - 2026-05-10
 
 Implementation/config changes:

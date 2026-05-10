@@ -96,6 +96,86 @@ faster_gs::rasterization::forward_wrapper(
     };
 }
 
+std::tuple<torch::Tensor, torch::Tensor>
+faster_gs::rasterization::forward_image_wrapper(
+    const torch::Tensor& means,
+    const torch::Tensor& scales,
+    const torch::Tensor& rotations,
+    const torch::Tensor& opacities,
+    const torch::Tensor& sh_coefficients_0,
+    const torch::Tensor& sh_coefficients_rest,
+    const torch::Tensor& metric_map,
+    const torch::Tensor& w2c,
+    const torch::Tensor& cam_position,
+    const torch::Tensor& bg_color,
+    const int active_sh_bases,
+    const int width,
+    const int height,
+    const float focal_x,
+    const float focal_y,
+    const float center_x,
+    const float center_y,
+    const float near_plane,
+    const float far_plane,
+    const float current_mean_lr,
+    const int adam_step_count)
+{
+    // all optimizable tensors must be passed as contiguous CUDA float tensors
+    CHECK_INPUT(config::debug, means, "means");
+    CHECK_INPUT(config::debug, scales, "scales");
+    CHECK_INPUT(config::debug, rotations, "rotations");
+    CHECK_INPUT(config::debug, opacities, "opacities");
+    CHECK_INPUT(config::debug, sh_coefficients_0, "sh_coefficients_0");
+    CHECK_INPUT(config::debug, sh_coefficients_rest, "sh_coefficients_rest");
+
+    const int n_primitives = means.size(0);
+    const int total_sh_bases = sh_coefficients_rest.size(1);
+    const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
+    const torch::TensorOptions int_options = torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA);
+    const torch::TensorOptions byte_options = torch::TensorOptions().dtype(torch::kByte).device(torch::kCUDA);
+    torch::Tensor image = torch::empty({3, height, width}, float_options);
+    const bool collect_metric_counts = metric_map.size(0) > 0;
+    const torch::Tensor metric_map_contiguous = collect_metric_counts ? metric_map.contiguous() : metric_map;
+    torch::Tensor metric_counts = collect_metric_counts ? torch::zeros({n_primitives}, int_options) : torch::empty({0}, int_options);
+    torch::Tensor primitive_buffers = torch::empty({0}, byte_options);
+    torch::Tensor tile_range_buffers = torch::empty({0}, byte_options);
+    torch::Tensor instance_buffers = torch::empty({0}, byte_options);
+    const std::function<char*(size_t)> resize_primitive_buffers = resize_function_wrapper(primitive_buffers);
+    const std::function<char*(size_t)> resize_tile_range_buffers = resize_function_wrapper(tile_range_buffers);
+    const std::function<char*(size_t)> resize_instance_buffers = resize_function_wrapper(instance_buffers);
+
+    forward_image(
+        resize_primitive_buffers,
+        resize_tile_range_buffers,
+        resize_instance_buffers,
+        reinterpret_cast<float3*>(means.data_ptr<float>()),
+        reinterpret_cast<float3*>(scales.data_ptr<float>()),
+        reinterpret_cast<float4*>(rotations.data_ptr<float>()),
+        opacities.data_ptr<float>(),
+        reinterpret_cast<float3*>(sh_coefficients_0.data_ptr<float>()),
+        reinterpret_cast<float3*>(sh_coefficients_rest.data_ptr<float>()),
+        collect_metric_counts ? metric_map_contiguous.data_ptr<int>() : nullptr,
+        reinterpret_cast<float4*>(w2c.contiguous().data_ptr<float>()),
+        reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
+        reinterpret_cast<float3*>(bg_color.contiguous().data_ptr<float>()),
+        image.data_ptr<float>(),
+        collect_metric_counts ? metric_counts.data_ptr<int>() : nullptr,
+        n_primitives,
+        active_sh_bases,
+        total_sh_bases,
+        width,
+        height,
+        focal_x,
+        focal_y,
+        center_x,
+        center_y,
+        near_plane,
+        far_plane
+    );
+
+    return {image, metric_counts};
+}
+
 void faster_gs::rasterization::backward_wrapper(
     torch::Tensor& densification_info,
     torch::Tensor& means,

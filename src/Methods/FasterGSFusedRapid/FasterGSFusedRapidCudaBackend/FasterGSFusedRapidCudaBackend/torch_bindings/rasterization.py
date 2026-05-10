@@ -218,8 +218,7 @@ def rasterize_forward(
     (
         image,
         metric_counts,
-        *_,
-    ) = _C.forward(
+    ) = _C.forward_image(
         means,
         scales,
         rotations,
