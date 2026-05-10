@@ -1,5 +1,50 @@
 # FasterGSBasisRapid Changelog
 
+## fastergsbasisrapid-v0.5.0 - 2026-05-10
+
+Implementation/config changes:
+
+- Changed the `FasterGSBasisRapid` rasterizer API to accept `sh_coefficients_0` and `sh_coefficients_rest` separately.
+- Removed the Python-side full-SH `torch.cat` path from training, metric-count rendering, and inference rendering.
+- Changed CUDA backward to return separate gradients for DC SH and rest SH coefficients, matching the model's optimizer parameter split.
+- Rebuilt and installed `FasterGSBasisRapidCudaBackend` with CUDA 12.8 after the API change.
+- Added `configs/fastergsbasisrapid_v0_5_split_sh/bicycle.yaml`, copied from v0.4 and bumped to `fastergsbasisrapid-v0.5.0`.
+
+Build note:
+
+- `pip install --force-reinstall` must use CUDA 12.8 for this environment. CUDA 13.0 `nvcc` fails because PyTorch was compiled for CUDA 12.8.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSBasisRapid \
+  --config-dir configs/fastergsbasisrapid_v0_5_split_sh \
+  --repeats 1 \
+  --suite-name fastergsbasisrapid_v0_5_split_sh_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | image scale | train time | n_gaussians | PSNR | SSIM | LPIPS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsbasisrapid-v0.5.0 | bicycle | 0.3234937323 | 604.62s | 1,516,081 | 25.7350 | 0.7662 | 0.2778 |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 130,736 -> 162,595 | 0.9533 | 2.5107 | 12.0814 | 0.4724 | 0.9718 | 16.9895 |
+| 14000-14100 | 1,723,448 -> 1,723,538 | 1.4982 | 3.0215 | 14.7271 | 0.7331 | 1.9533 | 21.9332 |
+| 25000-25100 | 1,522,089 -> 1,522,089 | 1.4137 | 2.5331 | 13.1394 | 0.0000 | 0.1433 | 17.2296 |
+
+Interpretation:
+
+- Split SH reduces training time from `630.77s` to `604.62s` and lowers peak allocated VRAM from `2.52GiB` to `2.28GiB`.
+- Render and metric-count score passes improve, but backward remains about `12-15ms` per profiled iteration, still roughly 3x slower than the RapidGS reference windows.
+- The remaining gap is therefore in the BasisRapid rasterizer/backward kernel structure and/or autograd gradient materialization, not in SH concatenation alone.
+
 ## fastergsbasisrapid-v0.4.0 - 2026-05-10
 
 Implementation/config changes:

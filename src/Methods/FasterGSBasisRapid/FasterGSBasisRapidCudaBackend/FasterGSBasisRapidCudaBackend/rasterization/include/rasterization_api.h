@@ -11,7 +11,8 @@ namespace faster_gs::rasterization {
         const torch::Tensor& scales,
         const torch::Tensor& rotations,
         const torch::Tensor& opacities,
-        const torch::Tensor& sh_coefficients,
+        const torch::Tensor& sh_coefficients_0,
+        const torch::Tensor& sh_coefficients_rest,
         const torch::Tensor& metric_map,
         const torch::Tensor& w2c,
         const torch::Tensor& cam_position,
@@ -27,7 +28,7 @@ namespace faster_gs::rasterization {
         const float far_plane,
         const float compact_box_mult);
 
-    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
     backward_wrapper(
         torch::Tensor& densification_info,
         const torch::Tensor& grad_image,
@@ -35,7 +36,8 @@ namespace faster_gs::rasterization {
         const torch::Tensor& means,
         const torch::Tensor& scales,
         const torch::Tensor& rotations,
-        const torch::Tensor& sh_coefficients,
+        const torch::Tensor& sh_coefficients_0,
+        const torch::Tensor& sh_coefficients_rest,
         const torch::Tensor& primitive_buffers,
         const torch::Tensor& tile_buffers,
         const torch::Tensor& instance_buffers,

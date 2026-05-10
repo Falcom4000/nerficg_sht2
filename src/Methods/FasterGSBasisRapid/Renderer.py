@@ -63,7 +63,8 @@ class FasterGSBasisRapidRenderer(BaseRenderer):
             scales=self.model.gaussians.scales,
             rotations=self.model.gaussians.rotations,
             opacities=self.model.gaussians.opacities,
-            sh_coefficients=self.model.gaussians.sh_coefficients,
+            sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
+            sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             densification_info=self.model.gaussians.densification_info if update_densification_info else torch.empty(0),
             rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, self.COMPACT_BOX_MULT)
         )
@@ -79,7 +80,8 @@ class FasterGSBasisRapidRenderer(BaseRenderer):
             scales=self.model.gaussians.scales,
             rotations=self.model.gaussians.rotations,
             opacities=self.model.gaussians.opacities,
-            sh_coefficients=self.model.gaussians.sh_coefficients,
+            sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
+            sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             densification_info=torch.empty(0),
             metric_map=metric_map.reshape(-1).contiguous().to(dtype=torch.int32),
             rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, self.COMPACT_BOX_MULT, bg_color),
@@ -95,7 +97,8 @@ class FasterGSBasisRapidRenderer(BaseRenderer):
             scales=self.model.gaussians.scales * self.SCALE_MODIFIER,
             rotations=self.model.gaussians.rotations,
             opacities=self.model.gaussians.opacities,
-            sh_coefficients=self.model.gaussians.sh_coefficients,
+            sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
+            sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             densification_info=torch.empty(0),
             rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, self.COMPACT_BOX_MULT)
         ).clamp(0.0, 1.0)

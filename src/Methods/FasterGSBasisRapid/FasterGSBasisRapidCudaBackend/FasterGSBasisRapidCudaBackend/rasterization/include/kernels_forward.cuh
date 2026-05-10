@@ -182,7 +182,8 @@ namespace faster_gs::rasterization::kernels::forward {
         const float3* __restrict__ scales,
         const float4* __restrict__ rotations,
         const float* __restrict__ opacities,
-        const float3* __restrict__ sh_coefficients,
+        const float3* __restrict__ sh_coefficients_0,
+        const float3* __restrict__ sh_coefficients_rest,
         const float4* __restrict__ w2c,
         const float3* __restrict__ cam_position,
         uint* __restrict__ primitive_n_touched_tiles,
@@ -195,7 +196,7 @@ namespace faster_gs::rasterization::kernels::forward {
         const uint grid_width,
         const uint grid_height,
         const uint active_sh_bases,
-        const uint total_sh_bases,
+        const uint total_sh_bases_rest,
         const float width,
         const float height,
         const float focal_x,
@@ -321,8 +322,8 @@ namespace faster_gs::rasterization::kernels::forward {
         primitive_mean2d[primitive_idx] = mean2d;
         primitive_conic_opacity[primitive_idx] = conic_opacity;
         primitive_color[primitive_idx] = convert_sh_to_color(
-            sh_coefficients, mean3d, cam_position[0], primitive_idx,
-            active_sh_bases, total_sh_bases
+            sh_coefficients_0, sh_coefficients_rest, mean3d, cam_position[0], primitive_idx,
+            active_sh_bases, total_sh_bases_rest
         );
         primitive_depth[primitive_idx] = depth;
     }

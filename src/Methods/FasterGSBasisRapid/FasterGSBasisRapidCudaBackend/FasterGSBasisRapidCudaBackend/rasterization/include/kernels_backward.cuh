@@ -15,7 +15,8 @@ namespace faster_gs::rasterization::kernels::backward {
         const float3* __restrict__ means,
         const float3* __restrict__ scales,
         const float4* __restrict__ rotations,
-        const float3* __restrict__ sh_coefficients,
+        const float3* __restrict__ sh_coefficients_0,
+        const float3* __restrict__ sh_coefficients_rest,
         const float4* __restrict__ w2c,
         const float3* __restrict__ cam_position,
         const uint* __restrict__ primitive_n_touched_tiles,
@@ -26,11 +27,12 @@ namespace faster_gs::rasterization::kernels::backward {
         float3* __restrict__ grad_means,
         float3* __restrict__ grad_scales,
         float4* __restrict__ grad_rotations,
-        float3* __restrict__ grad_sh_coefficients,
+        float3* __restrict__ grad_sh_coefficients_0,
+        float3* __restrict__ grad_sh_coefficients_rest,
         float* __restrict__ densification_info,
         const uint n_primitives,
         const uint active_sh_bases,
-        const uint total_sh_bases,
+        const uint total_sh_bases_rest,
         const float width,
         const float height,
         const float focal_x,
@@ -46,8 +48,8 @@ namespace faster_gs::rasterization::kernels::backward {
 
         // sh evaluation backward
         const float3 dL_dmean3d_from_color = convert_sh_to_color_backward(
-            sh_coefficients, grad_colors, grad_sh_coefficients, mean3d, cam_position[0], primitive_idx, n_primitives,
-            active_sh_bases, total_sh_bases
+            sh_coefficients_0, sh_coefficients_rest, grad_colors, grad_sh_coefficients_0, grad_sh_coefficients_rest,
+            mean3d, cam_position[0], primitive_idx, n_primitives, active_sh_bases, total_sh_bases_rest
         );
 
         const float4 w2c_r3 = w2c[2];
