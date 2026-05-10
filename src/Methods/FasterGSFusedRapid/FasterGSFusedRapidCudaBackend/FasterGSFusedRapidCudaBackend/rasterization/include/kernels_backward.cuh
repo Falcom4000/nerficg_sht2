@@ -12,6 +12,7 @@ namespace cg = cooperative_groups;
 
 namespace faster_gs::rasterization::kernels::backward {
 
+    template <bool update_densification_info>
     __global__ void preprocess_backward_cu(
         float3* __restrict__ means,
         float3* __restrict__ scales,
@@ -175,7 +176,7 @@ namespace faster_gs::rasterization::kernels::backward {
         const float2 dL_dmean2d = grad_mean2d[primitive_idx];
 
         // for adaptive density control
-        if (densification_info != nullptr) {
+        if constexpr (update_densification_info) {
             densification_info[primitive_idx] += 1.0f;
             const float2 dL_dmean2d_ndc = 0.5f * make_float2(
                 dL_dmean2d.x * width,
@@ -256,6 +257,7 @@ namespace faster_gs::rasterization::kernels::backward {
     }
 
     // based on https://github.com/humansensinglab/taming-3dgs/blob/fd0f7d9edfe135eb4eefd3be82ee56dada7f2a16/submodules/diff-gaussian-rasterization/cuda_rasterizer/backward.cu#L404
+    template <bool update_densification_info>
     __global__ void blend_backward_cu(
         const uint2* __restrict__ tile_instance_ranges,
         const uint* __restrict__ tile_bucket_offsets,
@@ -460,7 +462,7 @@ namespace faster_gs::rasterization::kernels::backward {
                 conic.y * delta.x + conic.z * delta.y
             );
             dL_dmean2d_accum += dL_dmean2d;
-            if (grad_mean2d_abs != nullptr) {
+            if constexpr (update_densification_info) {
                 dL_dmean2d_abs_accum += make_float2(fabsf(dL_dmean2d.x), fabsf(dL_dmean2d.y));
             }
 
@@ -471,7 +473,7 @@ namespace faster_gs::rasterization::kernels::backward {
         if (valid_primitive) {
             atomicAdd(&grad_mean2d[primitive_idx].x, dL_dmean2d_accum.x);
             atomicAdd(&grad_mean2d[primitive_idx].y, dL_dmean2d_accum.y);
-            if (grad_mean2d_abs != nullptr) {
+            if constexpr (update_densification_info) {
                 atomicAdd(&grad_mean2d_abs[primitive_idx].x, dL_dmean2d_abs_accum.x);
                 atomicAdd(&grad_mean2d_abs[primitive_idx].y, dL_dmean2d_abs_accum.y);
             }

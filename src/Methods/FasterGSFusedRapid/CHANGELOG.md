@@ -1,5 +1,45 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.3.10 - 2026-05-10
+
+Implementation/config changes:
+
+- Templated `blend_backward_cu` on whether densification info is active.
+- Templated `preprocess_backward_cu` on whether densification info is active.
+- The post-densification path now compiles out absolute 2D mean-gradient accumulation/atomics and densification-info updates instead of guarding them with runtime uniform branches.
+- Added `configs/fastergsfusedrapid_v0_3_10_template_densification_backward/bicycle.yaml`, copied from v0.3.9 with only experiment metadata changed.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_3_10_template_densification_backward \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_3_10_template_densification_backward_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsfusedrapid-v0.3.10 | bicycle | 185.49s | 1,247,748 | 25.6526 | 0.7579 | 0.2945 | 4.64GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 113,980 -> 138,531 | 0.7883 | 0.4661 | 1.2150 | 0.2844 | 0.0000 | 2.7539 |
+| 14000-14100 | 1,356,913 -> 1,356,865 | 1.1063 | 0.4523 | 4.1254 | 0.3765 | 0.0000 | 6.0605 |
+| 25000-25100 | 1,251,330 -> 1,251,330 | 1.1154 | 0.4557 | 3.8614 | 0.0000 | 0.0000 | 5.4325 |
+
+Interpretation:
+
+- The pre-14900 densification path is semantically identical to v0.3.9; the post-densification path compiles out disabled densification work.
+- Target backward windows improved slightly versus v0.3.9 (`14000-14100`: `4.1638ms -> 4.1254ms`, `25000-25100`: `3.8721ms -> 3.8614ms`), but full train time regressed in this single run (`184.25s -> 185.49s`).
+- Treat this as a kernel-path cleanup with local profile benefit, not as a proven end-to-end speedup.
+
 ## fastergsfusedrapid-v0.3.9 - 2026-05-10
 
 Implementation/config changes:

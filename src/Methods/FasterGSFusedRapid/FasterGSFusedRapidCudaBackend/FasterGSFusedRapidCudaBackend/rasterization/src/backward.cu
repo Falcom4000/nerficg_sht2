@@ -5,6 +5,7 @@
 #include "utils.h"
 #include "helper_math.h"
 #include <stdexcept>
+#include <type_traits>
 
 void faster_gs::rasterization::backward(
     const float* grad_image,
@@ -59,31 +60,37 @@ void faster_gs::rasterization::backward(
     BucketBuffers bucket_buffers = BucketBuffers::from_blob(bucket_buffers_blob, n_buckets);
     instance_buffers.primitive_indices.selector = instance_primitive_indices_selector;
 
-    kernels::backward::blend_backward_cu<<<n_buckets, 32>>>(
-        tile_buffers.instance_ranges,
-        tile_buffers.buckets_offset,
-        instance_buffers.primitive_indices.Current(),
-        primitive_buffers.mean2d,
-        primitive_buffers.conic_opacity,
-        primitive_buffers.color,
-        bg_color,
-        grad_image,
-        image,
-        tile_buffers.final_transmittances,
-        tile_buffers.max_n_processed,
-        tile_buffers.n_processed,
-        bucket_buffers.tile_index,
-        bucket_buffers.color_transmittance,
-        grad_mean2d_helper,
-        grad_mean2d_abs_helper,
-        grad_conic_helper,
-        grad_opacities,
-        grad_colors,
-        n_primitives,
-        width,
-        height,
-        grid.x
-    );
+    const bool update_densification_info = densification_info != nullptr;
+    auto launch_blend_backward = [&](auto update_densification_tag) {
+        constexpr bool update = decltype(update_densification_tag)::value;
+        kernels::backward::blend_backward_cu<update><<<n_buckets, 32>>>(
+            tile_buffers.instance_ranges,
+            tile_buffers.buckets_offset,
+            instance_buffers.primitive_indices.Current(),
+            primitive_buffers.mean2d,
+            primitive_buffers.conic_opacity,
+            primitive_buffers.color,
+            bg_color,
+            grad_image,
+            image,
+            tile_buffers.final_transmittances,
+            tile_buffers.max_n_processed,
+            tile_buffers.n_processed,
+            bucket_buffers.tile_index,
+            bucket_buffers.color_transmittance,
+            grad_mean2d_helper,
+            grad_mean2d_abs_helper,
+            grad_conic_helper,
+            grad_opacities,
+            grad_colors,
+            n_primitives,
+            width,
+            height,
+            grid.x
+        );
+    };
+    if (update_densification_info) launch_blend_backward(std::true_type{});
+    else launch_blend_backward(std::false_type{});
     CHECK_CUDA(config::debug, "blend_backward")
 
     const float bias_correction1_rcp = 1.0f / (1.0f - std::pow(config::beta1, adam_step_count));
@@ -91,41 +98,46 @@ void faster_gs::rasterization::backward(
 
     const float step_size_means = current_mean_lr * bias_correction1_rcp;
 
-    kernels::backward::preprocess_backward_cu<<<div_round_up(n_primitives, config::block_size_preprocess_backward), config::block_size_preprocess_backward>>>(
-        means,
-        scales,
-        rotations,
-        opacities,
-        sh_coefficients_0,
-        sh_coefficients_rest,
-        moments_means,
-        moments_scales,
-        moments_rotations,
-        moments_opacities,
-        moments_sh_coefficients_0,
-        moments_sh_coefficients_rest,
-        w2c,
-        cam_position,
-        primitive_buffers.n_touched_tiles,
-        grad_mean2d_helper,
-        grad_mean2d_abs_helper,
-        grad_conic_helper,
-        grad_opacities,
-        grad_colors,
-        densification_info,
-        n_primitives,
-        active_sh_bases,
-        total_sh_bases,
-        static_cast<float>(width),
-        static_cast<float>(height),
-        focal_x,
-        focal_y,
-        center_x,
-        center_y,
-        step_size_means,
-        bias_correction1_rcp,
-        bias_correction2_sqrt_rcp
-    );
+    auto launch_preprocess_backward = [&](auto update_densification_tag) {
+        constexpr bool update = decltype(update_densification_tag)::value;
+        kernels::backward::preprocess_backward_cu<update><<<div_round_up(n_primitives, config::block_size_preprocess_backward), config::block_size_preprocess_backward>>>(
+            means,
+            scales,
+            rotations,
+            opacities,
+            sh_coefficients_0,
+            sh_coefficients_rest,
+            moments_means,
+            moments_scales,
+            moments_rotations,
+            moments_opacities,
+            moments_sh_coefficients_0,
+            moments_sh_coefficients_rest,
+            w2c,
+            cam_position,
+            primitive_buffers.n_touched_tiles,
+            grad_mean2d_helper,
+            grad_mean2d_abs_helper,
+            grad_conic_helper,
+            grad_opacities,
+            grad_colors,
+            densification_info,
+            n_primitives,
+            active_sh_bases,
+            total_sh_bases,
+            static_cast<float>(width),
+            static_cast<float>(height),
+            focal_x,
+            focal_y,
+            center_x,
+            center_y,
+            step_size_means,
+            bias_correction1_rcp,
+            bias_correction2_sqrt_rcp
+        );
+    };
+    if (update_densification_info) launch_preprocess_backward(std::true_type{});
+    else launch_preprocess_backward(std::false_type{});
     CHECK_CUDA(config::debug, "preprocess_backward")
 
     const int n_elements_means = n_primitives * 3;
