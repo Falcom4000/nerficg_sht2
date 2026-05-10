@@ -201,3 +201,34 @@ def diff_rasterize(
     if return_metric_counts:
         return image, metric_counts
     return image, autograd_dummy
+
+
+@torch.no_grad()
+def rasterize_forward(
+    means: torch.Tensor,
+    scales: torch.Tensor,
+    rotations: torch.Tensor,
+    opacities: torch.Tensor,
+    sh_coefficients_0: torch.Tensor,
+    sh_coefficients_rest: torch.Tensor,
+    rasterizer_settings: RasterizerSettings,
+    metric_map: torch.Tensor = None,
+    return_metric_counts: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    (
+        image,
+        metric_counts,
+        *_,
+    ) = _C.forward(
+        means,
+        scales,
+        rotations,
+        opacities,
+        sh_coefficients_0,
+        sh_coefficients_rest,
+        torch.empty(0, dtype=torch.int32, device=means.device) if metric_map is None else metric_map,
+        *rasterizer_settings.as_tuple(),
+    )
+    if return_metric_counts:
+        return image, metric_counts
+    return image

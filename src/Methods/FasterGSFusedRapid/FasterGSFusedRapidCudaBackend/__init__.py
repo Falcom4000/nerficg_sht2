@@ -11,7 +11,7 @@ __install_command__ = [
 ]
 
 try:
-    from .FasterGSFusedRapidCudaBackend.torch_bindings.rasterization import diff_rasterize, RasterizerSettings
-    __all__ = ['diff_rasterize', 'RasterizerSettings']
+    from .FasterGSFusedRapidCudaBackend.torch_bindings.rasterization import diff_rasterize, rasterize_forward, RasterizerSettings
+    __all__ = ['diff_rasterize', 'rasterize_forward', 'RasterizerSettings']
 except ImportError as e:
     raise Framework.ExtensionError(name=__extension_name__, install_command=__install_command__)
