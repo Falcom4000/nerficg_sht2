@@ -12,7 +12,7 @@ from Methods.FasterGSBasisRapid.Model import FasterGSBasisRapidModel
 from Methods.FasterGSBasisRapid.FasterGSBasisRapidCudaBackend import diff_rasterize, RasterizerSettings
 
 
-def extract_settings(view: View, active_sh_bases: int, bg_color: torch.Tensor = None) -> RasterizerSettings:
+def extract_settings(view: View, active_sh_bases: int, compact_box_mult: float, bg_color: torch.Tensor = None) -> RasterizerSettings:
     if not isinstance(view.camera, PerspectiveCamera):
         raise Framework.RendererError('FasterGSBasisRapid renderer only supports perspective cameras')
     if view.camera.distortion is not None:
@@ -30,12 +30,14 @@ def extract_settings(view: View, active_sh_bases: int, bg_color: torch.Tensor = 
         view.camera.center_y,
         view.camera.near_plane,
         view.camera.far_plane,
+        compact_box_mult,
     )
 
 
 @Framework.Configurable.configure(
     CLAMP_IMAGE_TRAINING=False,
     SCALE_MODIFIER=1.0,
+    COMPACT_BOX_MULT=0.5,
 )
 class FasterGSBasisRapidRenderer(BaseRenderer):
     """Wrapper around the rasterization module from 3DGS."""
@@ -63,7 +65,7 @@ class FasterGSBasisRapidRenderer(BaseRenderer):
             opacities=self.model.gaussians.opacities,
             sh_coefficients=self.model.gaussians.sh_coefficients,
             densification_info=self.model.gaussians.densification_info if update_densification_info else torch.empty(0),
-            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases)
+            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, self.COMPACT_BOX_MULT)
         )
         if self.CLAMP_IMAGE_TRAINING:
             image = image.clamp(0.0, 1.0)
@@ -80,7 +82,7 @@ class FasterGSBasisRapidRenderer(BaseRenderer):
             sh_coefficients=self.model.gaussians.sh_coefficients,
             densification_info=torch.empty(0),
             metric_map=metric_map.reshape(-1).contiguous().to(dtype=torch.int32),
-            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, bg_color),
+            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, self.COMPACT_BOX_MULT, bg_color),
             return_metric_counts=True,
         )
         return image, metric_counts
@@ -95,7 +97,7 @@ class FasterGSBasisRapidRenderer(BaseRenderer):
             opacities=self.model.gaussians.opacities,
             sh_coefficients=self.model.gaussians.sh_coefficients,
             densification_info=torch.empty(0),
-            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases)
+            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, self.COMPACT_BOX_MULT)
         ).clamp(0.0, 1.0)
         return {'rgb': image if to_chw else image.permute(1, 2, 0)}
 

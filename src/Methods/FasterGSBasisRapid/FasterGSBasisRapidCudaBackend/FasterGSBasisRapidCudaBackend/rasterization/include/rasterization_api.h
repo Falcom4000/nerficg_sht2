@@ -24,7 +24,8 @@ namespace faster_gs::rasterization {
         const float center_x,
         const float center_y,
         const float near_plane,
-        const float far_plane);
+        const float far_plane,
+        const float compact_box_mult);
 
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
     backward_wrapper(

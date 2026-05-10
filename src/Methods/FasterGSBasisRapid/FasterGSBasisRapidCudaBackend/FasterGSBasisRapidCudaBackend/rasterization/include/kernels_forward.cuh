@@ -11,6 +11,172 @@ namespace cg = cooperative_groups;
 
 namespace faster_gs::rasterization::kernels::forward {
 
+    __device__ inline float2 compute_ellipse_intersection(
+        const float4 conic_opacity,
+        const float discriminant,
+        const float threshold,
+        const float2 mean2d,
+        const bool axis_y,
+        const float coord)
+    {
+        const float mean_u = axis_y ? mean2d.y : mean2d.x;
+        const float mean_v = axis_y ? mean2d.x : mean2d.y;
+        const float coeff = axis_y ? conic_opacity.x : conic_opacity.z;
+        const float delta = coord - mean_u;
+        const float sqrt_term = sqrtf(discriminant * delta * delta + threshold * coeff);
+        return make_float2(
+            (-conic_opacity.y * delta - sqrt_term) / coeff + mean_v,
+            (-conic_opacity.y * delta + sqrt_term) / coeff + mean_v
+        );
+    }
+
+    __device__ inline uint process_compact_tiles(
+        const float4 conic_opacity,
+        const float discriminant,
+        const float threshold,
+        const float2 mean2d,
+        float2 bbox_min,
+        float2 bbox_max,
+        float2 bbox_argmin,
+        float2 bbox_argmax,
+        int2 rect_min,
+        int2 rect_max,
+        const uint grid_width,
+        const bool axis_y,
+        const uint primitive_idx,
+        uint offset,
+        const float depth,
+        uint64_t* __restrict__ instance_keys,
+        uint* __restrict__ instance_primitive_indices)
+    {
+        const float block_u = axis_y ? static_cast<float>(config::tile_height) : static_cast<float>(config::tile_width);
+        const float block_v = axis_y ? static_cast<float>(config::tile_width) : static_cast<float>(config::tile_height);
+
+        if (axis_y) {
+            rect_min = make_int2(rect_min.y, rect_min.x);
+            rect_max = make_int2(rect_max.y, rect_max.x);
+            bbox_min = make_float2(bbox_min.y, bbox_min.x);
+            bbox_max = make_float2(bbox_max.y, bbox_max.x);
+            bbox_argmin = make_float2(bbox_argmin.y, bbox_argmin.x);
+            bbox_argmax = make_float2(bbox_argmax.y, bbox_argmax.x);
+        }
+
+        uint n_touched_tiles = 0;
+        float2 intersect_max_line = make_float2(bbox_max.y, bbox_min.y);
+        float2 intersect_min_line;
+        float min_line = rect_min.x * block_u;
+
+        if (bbox_min.x <= min_line) {
+            intersect_min_line = compute_ellipse_intersection(conic_opacity, discriminant, threshold, mean2d, axis_y, min_line);
+        }
+        else {
+            intersect_min_line = intersect_max_line;
+        }
+
+        for (int u = rect_min.x; u < rect_max.x; ++u) {
+            const float max_line = min_line + block_u;
+            if (max_line <= bbox_max.x) {
+                intersect_max_line = compute_ellipse_intersection(conic_opacity, discriminant, threshold, mean2d, axis_y, max_line);
+            }
+
+            const float ellipse_min = (min_line <= bbox_argmin.y && bbox_argmin.y < max_line)
+                ? bbox_min.y
+                : fminf(intersect_min_line.x, intersect_max_line.x);
+            const float ellipse_max = (min_line <= bbox_argmax.y && bbox_argmax.y < max_line)
+                ? bbox_max.y
+                : fmaxf(intersect_min_line.y, intersect_max_line.y);
+
+            const int min_tile_v = max(rect_min.y, min(rect_max.y, static_cast<int>(ellipse_min / block_v)));
+            const int max_tile_v = min(rect_max.y, max(rect_min.y, static_cast<int>(ellipse_max / block_v + 1.0f)));
+            n_touched_tiles += max_tile_v - min_tile_v;
+
+            if (instance_keys != nullptr) {
+                for (int v = min_tile_v; v < max_tile_v; ++v) {
+                    const uint tile_idx = axis_y
+                        ? static_cast<uint>(u * static_cast<int>(grid_width) + v)
+                        : static_cast<uint>(v * static_cast<int>(grid_width) + u);
+                    const uint depth_key = __float_as_uint(depth);
+                    instance_keys[offset] = (static_cast<uint64_t>(tile_idx) << 32) | static_cast<uint64_t>(depth_key);
+                    instance_primitive_indices[offset] = primitive_idx;
+                    offset++;
+                }
+            }
+
+            intersect_min_line = intersect_max_line;
+            min_line = max_line;
+        }
+
+        return n_touched_tiles;
+    }
+
+    __device__ inline uint compact_tile_count_or_emit(
+        const float2 mean2d,
+        const float4 conic_opacity,
+        const uint grid_width,
+        const uint grid_height,
+        const float compact_box_mult,
+        const uint primitive_idx,
+        const uint offset,
+        const float depth,
+        uint64_t* __restrict__ instance_keys,
+        uint* __restrict__ instance_primitive_indices)
+    {
+        const float discriminant = conic_opacity.y * conic_opacity.y - conic_opacity.x * conic_opacity.z;
+        if (conic_opacity.x <= 0.0f || conic_opacity.z <= 0.0f || discriminant >= 0.0f) return 0;
+
+        const float threshold = compact_box_mult * 2.0f * logf(conic_opacity.w * config::min_alpha_threshold_rcp);
+        if (threshold <= 0.0f) return 0;
+
+        float x_term = sqrtf(-(conic_opacity.y * conic_opacity.y * threshold) / (discriminant * conic_opacity.x));
+        x_term = (conic_opacity.y < 0.0f) ? x_term : -x_term;
+        float y_term = sqrtf(-(conic_opacity.y * conic_opacity.y * threshold) / (discriminant * conic_opacity.z));
+        y_term = (conic_opacity.y < 0.0f) ? y_term : -y_term;
+
+        const float2 bbox_argmin = make_float2(mean2d.y - y_term, mean2d.x - x_term);
+        const float2 bbox_argmax = make_float2(mean2d.y + y_term, mean2d.x + x_term);
+        const float2 bbox_min = make_float2(
+            compute_ellipse_intersection(conic_opacity, discriminant, threshold, mean2d, true, bbox_argmin.x).x,
+            compute_ellipse_intersection(conic_opacity, discriminant, threshold, mean2d, false, bbox_argmin.y).x
+        );
+        const float2 bbox_max = make_float2(
+            compute_ellipse_intersection(conic_opacity, discriminant, threshold, mean2d, true, bbox_argmax.x).y,
+            compute_ellipse_intersection(conic_opacity, discriminant, threshold, mean2d, false, bbox_argmax.y).y
+        );
+
+        const int2 rect_min = make_int2(
+            max(0, min(static_cast<int>(grid_width), static_cast<int>(bbox_min.x / static_cast<float>(config::tile_width)))),
+            max(0, min(static_cast<int>(grid_height), static_cast<int>(bbox_min.y / static_cast<float>(config::tile_height))))
+        );
+        const int2 rect_max = make_int2(
+            max(0, min(static_cast<int>(grid_width), static_cast<int>(bbox_max.x / static_cast<float>(config::tile_width) + 1.0f))),
+            max(0, min(static_cast<int>(grid_height), static_cast<int>(bbox_max.y / static_cast<float>(config::tile_height) + 1.0f)))
+        );
+
+        const int x_span = rect_max.x - rect_min.x;
+        const int y_span = rect_max.y - rect_min.y;
+        if (x_span * y_span == 0) return 0;
+
+        return process_compact_tiles(
+            conic_opacity,
+            discriminant,
+            threshold,
+            mean2d,
+            bbox_min,
+            bbox_max,
+            bbox_argmin,
+            bbox_argmax,
+            rect_min,
+            rect_max,
+            grid_width,
+            y_span < x_span,
+            primitive_idx,
+            offset,
+            depth,
+            instance_keys,
+            instance_primitive_indices
+        );
+    }
+
     __global__ void preprocess_cu(
         const float3* __restrict__ means,
         const float3* __restrict__ scales,
@@ -37,7 +203,8 @@ namespace faster_gs::rasterization::kernels::forward {
         const float center_x,
         const float center_y,
         const float near_plane,
-        const float far_plane)
+        const float far_plane,
+        const float compact_box_mult)
     {
         const uint primitive_idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (primitive_idx >= n_primitives) return;
@@ -133,30 +300,26 @@ namespace faster_gs::rasterization::kernels::forward {
             y * focal_y + center_y
         );
 
-        // compute bounds
-        const float midpoint = 0.5f * (cov2d.x + cov2d.z);
-        const float discriminant = midpoint * midpoint - determinant;
-        const float max_eigenvalue = midpoint + sqrtf(fmaxf(0.1f, discriminant));
-        const float radius = ceilf(3.0f * sqrtf(max_eigenvalue));
-        const uint4 screen_bounds = make_uint4(
-            min(grid_width, static_cast<uint>(max(0, __float2int_rd((mean2d.x - radius) / static_cast<float>(config::tile_width))))), // x_min
-            min(grid_width, static_cast<uint>(max(0, __float2int_ru((mean2d.x + radius) / static_cast<float>(config::tile_width))))), // x_max
-            min(grid_height, static_cast<uint>(max(0, __float2int_rd((mean2d.y - radius) / static_cast<float>(config::tile_height))))), // y_min
-            min(grid_height, static_cast<uint>(max(0, __float2int_ru((mean2d.y + radius) / static_cast<float>(config::tile_height))))) // y_max
+        const float4 conic_opacity = make_float4(conic, opacity);
+        const uint n_touched_tiles = compact_tile_count_or_emit(
+            mean2d,
+            conic_opacity,
+            grid_width,
+            grid_height,
+            compact_box_mult,
+            primitive_idx,
+            0,
+            depth,
+            nullptr,
+            nullptr
         );
-        const uint n_touched_tiles = (screen_bounds.y - screen_bounds.x) * (screen_bounds.w - screen_bounds.z);
         if (n_touched_tiles == 0) return;
 
         // store results
         primitive_n_touched_tiles[primitive_idx] = n_touched_tiles;
-        primitive_screen_bounds[primitive_idx] = make_ushort4(
-            static_cast<ushort>(screen_bounds.x),
-            static_cast<ushort>(screen_bounds.y),
-            static_cast<ushort>(screen_bounds.z),
-            static_cast<ushort>(screen_bounds.w)
-        );
+        primitive_screen_bounds[primitive_idx] = make_ushort4(0, 0, 0, 0);
         primitive_mean2d[primitive_idx] = mean2d;
-        primitive_conic_opacity[primitive_idx] = make_float4(conic, opacity);
+        primitive_conic_opacity[primitive_idx] = conic_opacity;
         primitive_color[primitive_idx] = convert_sh_to_color(
             sh_coefficients, mean3d, cam_position[0], primitive_idx,
             active_sh_bases, total_sh_bases
@@ -172,22 +335,27 @@ namespace faster_gs::rasterization::kernels::forward {
         uint64_t* __restrict__ instance_keys,
         uint* __restrict__ instance_primitive_indices,
         const uint grid_width,
+        const uint grid_height,
+        const float2* __restrict__ primitive_mean2d,
+        const float4* __restrict__ primitive_conic_opacity,
+        const float compact_box_mult,
         const uint n_primitives)
     {
         const uint primitive_idx = blockIdx.x * blockDim.x + threadIdx.x;
         if (primitive_idx >= n_primitives || primitive_n_touched_tiles[primitive_idx] == 0) return;
-        const ushort4 screen_bounds = primitive_screen_bounds[primitive_idx];
         uint offset = (primitive_idx == 0) ? 0 : primitive_offsets[primitive_idx - 1];
-        const uint depth_key = __float_as_uint(primitive_depths[primitive_idx]);
-        for (uint y = screen_bounds.z; y < screen_bounds.w; y++) {
-            for (uint x = screen_bounds.x; x < screen_bounds.y; x++) {
-                const uint tile_idx = y * grid_width + x;
-                const uint64_t instance_key = (static_cast<uint64_t>(tile_idx) << 32) | static_cast<uint64_t>(depth_key);
-                instance_keys[offset] = instance_key;
-                instance_primitive_indices[offset] = primitive_idx;
-                offset++;
-            }
-        }
+        compact_tile_count_or_emit(
+            primitive_mean2d[primitive_idx],
+            primitive_conic_opacity[primitive_idx],
+            grid_width,
+            grid_height,
+            compact_box_mult,
+            primitive_idx,
+            offset,
+            primitive_depths[primitive_idx],
+            instance_keys,
+            instance_primitive_indices
+        );
     }
 
     __global__ void extract_instance_ranges_cu(

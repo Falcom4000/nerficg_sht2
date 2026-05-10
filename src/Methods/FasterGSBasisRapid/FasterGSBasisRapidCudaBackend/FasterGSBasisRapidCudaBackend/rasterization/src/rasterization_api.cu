@@ -27,7 +27,8 @@ faster_gs::rasterization::forward_wrapper(
     const float center_x,
     const float center_y,
     const float near_plane,
-    const float far_plane)
+    const float far_plane,
+    const float compact_box_mult)
 {
     // all optimizable tensors must be passed as contiguous CUDA float tensors
     CHECK_INPUT(config::debug, means, "means");
@@ -76,7 +77,8 @@ faster_gs::rasterization::forward_wrapper(
         center_x,
         center_y,
         near_plane,
-        far_plane
+        far_plane,
+        compact_box_mult
     );
 
     return {

@@ -18,6 +18,7 @@ class RasterizerSettings(NamedTuple):
     center_y: float  # y coordinate of the image center in pixels (positive -> down)
     near_plane: float  # near clipping plane distance
     far_plane: float  # far clipping plane distance
+    compact_box_mult: float  # RapidGS compact-box multiplier for tile coverage
 
     def as_tuple(self) -> tuple:
         return (
@@ -33,7 +34,11 @@ class RasterizerSettings(NamedTuple):
             self.center_y,
             self.near_plane,
             self.far_plane,
+            self.compact_box_mult,
         )
+
+    def as_backward_tuple(self) -> tuple:
+        return self.as_tuple()[:-1]
 
 
 class _Rasterize(torch.autograd.Function):
@@ -90,7 +95,7 @@ class _Rasterize(torch.autograd.Function):
             ctx.densification_info,
             grad_image,
             *ctx.saved_tensors,
-            *ctx.rasterizer_settings.as_tuple(),
+            *ctx.rasterizer_settings.as_backward_tuple(),
             *ctx.buffer_state,
         )
         return (

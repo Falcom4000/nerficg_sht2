@@ -32,7 +32,8 @@ std::tuple<int, int> faster_gs::rasterization::forward(
     const float center_x,
     const float center_y,
     const float near_plane,
-    const float far_plane)
+    const float far_plane,
+    const float compact_box_mult)
 {
     const dim3 grid(div_round_up(width, config::tile_width), div_round_up(height, config::tile_height), 1);
     const dim3 block(config::tile_width, config::tile_height, 1);
@@ -82,7 +83,8 @@ std::tuple<int, int> faster_gs::rasterization::forward(
         center_x,
         center_y,
         near_plane,
-        far_plane
+        far_plane,
+        compact_box_mult
     );
     CHECK_CUDA(config::debug, "preprocess")
 
@@ -109,6 +111,10 @@ std::tuple<int, int> faster_gs::rasterization::forward(
         instance_buffers.keys.Current(),
         instance_buffers.primitive_indices.Current(),
         grid.x,
+        grid.y,
+        primitive_buffers.mean2d,
+        primitive_buffers.conic_opacity,
+        compact_box_mult,
         n_primitives
     );
     CHECK_CUDA(config::debug, "create_instances")
