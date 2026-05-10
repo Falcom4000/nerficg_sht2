@@ -46,10 +46,12 @@ class _Rasterize(torch.autograd.Function):
         opacities: torch.Tensor,
         sh_coefficients: torch.Tensor,
         densification_info: torch.Tensor,
+        metric_map: torch.Tensor,
         rasterizer_settings: RasterizerSettings,
-    ) -> torch.Tensor:
+    ) -> 'tuple[torch.Tensor, torch.Tensor]':
         (
             image,
+            metric_counts,
             primitive_buffers, tile_buffers, instance_buffers,
             n_instances, instance_primitive_indices_selector
         ) = _C.forward(
@@ -58,6 +60,7 @@ class _Rasterize(torch.autograd.Function):
             rotations,
             opacities,
             sh_coefficients,
+            metric_map,
             *rasterizer_settings.as_tuple(),
         )
         ctx.rasterizer_settings = rasterizer_settings
@@ -73,15 +76,16 @@ class _Rasterize(torch.autograd.Function):
             instance_buffers,
         )
         ctx.densification_info = densification_info
-        ctx.mark_non_differentiable(densification_info)
-        return image
+        ctx.mark_non_differentiable(densification_info, metric_counts)
+        return image, metric_counts
 
     @staticmethod
     @once_differentiable
     def backward(
         ctx: Any,
         grad_image: torch.Tensor,
-    ) -> 'tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None]':
+        _,
+    ) -> 'tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, None, None, None]':
         grad_means, grad_scales, grad_rotations, grad_opacities, grad_sh_coefficients = _C.backward(
             ctx.densification_info,
             grad_image,
@@ -96,6 +100,7 @@ class _Rasterize(torch.autograd.Function):
             grad_opacities,
             grad_sh_coefficients,
             None,  # densification_info
+            None,  # metric_map
             None,  # rasterizer_settings
         )
 
@@ -108,13 +113,19 @@ def diff_rasterize(
     sh_coefficients: torch.Tensor,
     densification_info: torch.Tensor,
     rasterizer_settings: RasterizerSettings,
-) -> torch.Tensor:
-    return _Rasterize.apply(
+    metric_map: torch.Tensor = None,
+    return_metric_counts: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+    image, metric_counts = _Rasterize.apply(
         means,
         scales,
         rotations,
         opacities,
         sh_coefficients,
         densification_info,
+        torch.empty(0, dtype=torch.int32, device=means.device) if metric_map is None else metric_map,
         rasterizer_settings,
     )
+    if return_metric_counts:
+        return image, metric_counts
+    return image

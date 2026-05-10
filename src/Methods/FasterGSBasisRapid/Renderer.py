@@ -12,7 +12,7 @@ from Methods.FasterGSBasisRapid.Model import FasterGSBasisRapidModel
 from Methods.FasterGSBasisRapid.FasterGSBasisRapidCudaBackend import diff_rasterize, RasterizerSettings
 
 
-def extract_settings(view: View, active_sh_bases: int) -> RasterizerSettings:
+def extract_settings(view: View, active_sh_bases: int, bg_color: torch.Tensor = None) -> RasterizerSettings:
     if not isinstance(view.camera, PerspectiveCamera):
         raise Framework.RendererError('FasterGSBasisRapid renderer only supports perspective cameras')
     if view.camera.distortion is not None:
@@ -20,7 +20,7 @@ def extract_settings(view: View, active_sh_bases: int) -> RasterizerSettings:
     return RasterizerSettings(
         view.w2c,
         view.position,
-        view.camera.background_color,
+        view.camera.background_color if bg_color is None else bg_color,
         active_sh_bases,
         view.camera.width,
         view.camera.height,
@@ -68,6 +68,22 @@ class FasterGSBasisRapidRenderer(BaseRenderer):
         if self.CLAMP_IMAGE_TRAINING:
             image = image.clamp(0.0, 1.0)
         return image
+
+    @torch.no_grad()
+    def render_image_metric_counts(self, view: View, metric_map: torch.Tensor, bg_color: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Renders an image and counts high-error pixel hits per Gaussian."""
+        image, metric_counts = diff_rasterize(
+            means=self.model.gaussians.means,
+            scales=self.model.gaussians.scales,
+            rotations=self.model.gaussians.rotations,
+            opacities=self.model.gaussians.opacities,
+            sh_coefficients=self.model.gaussians.sh_coefficients,
+            densification_info=torch.empty(0),
+            metric_map=metric_map.reshape(-1).contiguous().to(dtype=torch.int32),
+            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, bg_color),
+            return_metric_counts=True,
+        )
+        return image, metric_counts
 
     @torch.no_grad()
     def render_image_inference(self, view: View, to_chw: bool = False) -> dict[str, torch.Tensor]:

@@ -261,9 +261,18 @@ class Gaussians(torch.nn.Module):
             prune_mask |= self.scales.max(dim=1).values > 0.1 * self.training_cameras_extent
         self.prune(prune_mask)
 
-    def adaptive_density_control(self, grad_threshold: float, min_opacity: float, prune_large_gaussians: bool) -> None:
+    def adaptive_density_control(
+        self,
+        grad_threshold: float,
+        min_opacity: float,
+        prune_large_gaussians: bool,
+        importance_score: torch.Tensor | None = None,
+        importance_threshold: float = 0.0,
+    ) -> None:
         """Densify Gaussians and prune those that are not visible or too large."""
         densification_mask = self.densification_info[1] >= grad_threshold * self.densification_info[0].clamp_min(1.0)
+        if importance_score is not None:
+            densification_mask &= importance_score[:densification_mask.shape[0]].to(densification_mask.device) > importance_threshold
         is_small = torch.max(self._scales, dim=1).values <= math.log(self.percent_dense * self.training_cameras_extent)
 
         # duplicate small gaussians
@@ -314,6 +323,13 @@ class Gaussians(torch.nn.Module):
         prune_mask |= self._rotations.mul(self._rotations).sum(dim=1) < 1e-8
         if prune_large_gaussians:
             prune_mask |= self._scales.max(dim=1).values > math.log(0.1 * self.training_cameras_extent)
+        self.prune(prune_mask)
+
+    def prune_by_multiview_score(self, min_opacity: float, pruning_score: torch.Tensor, score_threshold: float) -> None:
+        """Prunes Gaussians using FastGS multi-view pruning score."""
+        prune_mask = self.opacities.flatten() < min_opacity
+        prune_mask |= self._rotations.mul(self._rotations).sum(dim=1) < 1e-8
+        prune_mask |= pruning_score[:prune_mask.shape[0]].to(prune_mask.device) > score_threshold
         self.prune(prune_mask)
 
     @torch.no_grad()
