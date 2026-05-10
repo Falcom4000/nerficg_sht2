@@ -545,7 +545,7 @@ def main() -> int:
                     dataset_type=dataset_type,
                     config_name_prefix=args.config_name_prefix,
                     user_overrides=user_overrides,
-                    apply_mipnerf360_scale_defaults=not args.no_mipnerf360_scale_defaults,
+                    apply_mipnerf360_scale_defaults=not args.no_mipnerf360_scale_defaults and method not in config_dirs,
                 )
                 config_name = config['TRAINING']['MODEL_NAME']
                 config_path = suite_dir / 'configs' / method / scene / f'run_{repeat:02d}_{config_name}.yaml'

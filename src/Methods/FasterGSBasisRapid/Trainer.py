@@ -44,10 +44,15 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
         LEARNING_RATE_MEANS_FINAL=0.0000016,
         LEARNING_RATE_MEANS_MAX_STEPS=30_000,
         LEARNING_RATE_SH_COEFFICIENTS_0=0.0025,
-        LEARNING_RATE_SH_COEFFICIENTS_REST=0.000125,  # 0.0025 / 20
+        LEARNING_RATE_SH_COEFFICIENTS_REST=0.00025,  # RapidGS highfeature_lr / 20 = 0.005 / 20
         LEARNING_RATE_OPACITIES=0.025,  # recently updated in official code; used to be 0.05
         LEARNING_RATE_SCALES=0.005,
         LEARNING_RATE_ROTATIONS=0.001,
+        SH_REST_UPDATE_INTERVAL=16,
+        LATE_UPDATE_START_ITERATION=15_000,
+        LATE_UPDATE_INTERVAL=32,
+        FINAL_UPDATE_START_ITERATION=20_000,
+        FINAL_UPDATE_INTERVAL=64,
     ),
 )
 class FasterGSBasisRapidTrainer(GuiTrainer):
@@ -228,8 +233,15 @@ class FasterGSBasisRapidTrainer(GuiTrainer):
         # backward
         loss.backward()
         # optimizer step
-        self.model.gaussians.optimizer.step()
-        self.model.gaussians.optimizer.zero_grad()
+        self.model.gaussians.optimizer_step(
+            optimization_step=iteration + 1,
+            total_iterations=self.NUM_ITERATIONS,
+            sh_rest_update_interval=self.OPTIMIZER.SH_REST_UPDATE_INTERVAL,
+            late_update_start_iteration=self.OPTIMIZER.LATE_UPDATE_START_ITERATION,
+            late_update_interval=self.OPTIMIZER.LATE_UPDATE_INTERVAL,
+            final_update_start_iteration=self.OPTIMIZER.FINAL_UPDATE_START_ITERATION,
+            final_update_interval=self.OPTIMIZER.FINAL_UPDATE_INTERVAL,
+        )
 
     @training_callback(active='WANDB.ACTIVATE', priority=10, iteration_stride='WANDB.INTERVAL')
     @torch.no_grad()

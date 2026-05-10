@@ -77,6 +77,8 @@ configs/<CONFIG_DIR>/
 
 Pass that directory to the runner with `--config-dir configs/<CONFIG_DIR>`.
 
+When a method-specific `--config-dir` is provided, scene YAML files are treated as the source of truth for dataset scale. The runner still fills `DATASET.PATH`, but it no longer overwrites an explicit `DATASET.IMAGE_SCALE_FACTOR` from the scene config with the built-in Mip-NeRF 360 scale defaults. The built-in scale defaults are only applied when running from generated/default configs or templates.
+
 Useful benchmark defaults are forced by the runner:
 
 - `TRAINING.WANDB.ACTIVATE=false`

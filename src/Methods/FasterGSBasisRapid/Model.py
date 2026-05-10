@@ -31,6 +31,7 @@ class Gaussians(torch.nn.Module):
         self.register_parameter('_opacities', None)
         self._densification_info = None
         self.optimizer = None
+        self.sh_optimizer = None
         self.percent_dense = 0.0
         self.training_cameras_extent = 1.0
         self.lr_means_scheduler = None
@@ -140,13 +141,16 @@ class Gaussians(torch.nn.Module):
         param_groups = [
             {'params': [self._means], 'lr': training_wrapper.OPTIMIZER.LEARNING_RATE_MEANS_INIT * self.training_cameras_extent, 'name': 'means'},
             {'params': [self._sh_coefficients_0], 'lr': training_wrapper.OPTIMIZER.LEARNING_RATE_SH_COEFFICIENTS_0, 'name': 'sh_coefficients_0'},
-            {'params': [self._sh_coefficients_rest], 'lr': training_wrapper.OPTIMIZER.LEARNING_RATE_SH_COEFFICIENTS_REST, 'name': 'sh_coefficients_rest'},
             {'params': [self._opacities], 'lr': training_wrapper.OPTIMIZER.LEARNING_RATE_OPACITIES, 'name': 'opacities'},
             {'params': [self._scales], 'lr': training_wrapper.OPTIMIZER.LEARNING_RATE_SCALES, 'name': 'scales'},
             {'params': [self._rotations], 'lr': training_wrapper.OPTIMIZER.LEARNING_RATE_ROTATIONS, 'name': 'rotations'}
         ]
+        sh_param_groups = [
+            {'params': [self._sh_coefficients_rest], 'lr': training_wrapper.OPTIMIZER.LEARNING_RATE_SH_COEFFICIENTS_REST, 'name': 'sh_coefficients_rest'},
+        ]
 
         self.optimizer = torch.optim.Adam(param_groups, lr=0.0, eps=1e-15)
+        self.sh_optimizer = torch.optim.Adam(sh_param_groups, lr=0.0, eps=1e-15)
 
         self.lr_means_scheduler = LRDecayPolicy(
             lr_init=training_wrapper.OPTIMIZER.LEARNING_RATE_MEANS_INIT * self.training_cameras_extent,
@@ -160,15 +164,61 @@ class Gaussians(torch.nn.Module):
             if param_group['name'] == 'means':
                 param_group['lr'] = self.lr_means_scheduler(iteration)
 
+    def optimizer_step(
+        self,
+        optimization_step: int,
+        total_iterations: int,
+        sh_rest_update_interval: int,
+        late_update_start_iteration: int,
+        late_update_interval: int,
+        final_update_start_iteration: int,
+        final_update_interval: int,
+    ) -> None:
+        """Apply the RapidGS default optimizer schedule."""
+        if optimization_step >= total_iterations:
+            return
+
+        if optimization_step <= late_update_start_iteration:
+            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+            if optimization_step % sh_rest_update_interval == 0:
+                self.sh_optimizer.step()
+                self.sh_optimizer.zero_grad(set_to_none=True)
+        elif optimization_step <= final_update_start_iteration:
+            if optimization_step % late_update_interval == 0:
+                self.optimizer.step()
+                self.optimizer.zero_grad(set_to_none=True)
+                self.sh_optimizer.step()
+                self.sh_optimizer.zero_grad(set_to_none=True)
+        elif optimization_step % final_update_interval == 0:
+            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
+            self.sh_optimizer.step()
+            self.sh_optimizer.zero_grad(set_to_none=True)
+
+    def _replace_param_group_data(self, new_values: torch.Tensor, group_name: str, reset_state: bool = True) -> None:
+        for optimizer in (self.optimizer, self.sh_optimizer):
+            replace_param_group_data(optimizer, new_values, group_name, reset_state)
+
+    def _prune_param_groups(self, valid_mask: torch.Tensor) -> dict[str, torch.Tensor]:
+        param_groups = prune_param_groups(self.optimizer, valid_mask)
+        param_groups.update(prune_param_groups(self.sh_optimizer, valid_mask))
+        return param_groups
+
+    def _extend_param_groups(self, additional_params: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        param_groups = extend_param_groups(self.optimizer, additional_params)
+        param_groups.update(extend_param_groups(self.sh_optimizer, additional_params))
+        return param_groups
+
     def reset_opacities(self) -> None:
         """Resets the opacities to a fixed value."""
         opacities_new = self._opacities.clamp_max(-4.595119953155518)  # sigmoid(-4.595119953155518) = 0.01
-        replace_param_group_data(self.optimizer, opacities_new, 'opacities')
+        self._replace_param_group_data(opacities_new, 'opacities')
 
     def prune(self, prune_mask: torch.Tensor) -> None:
         """Prunes Gaussians that are not visible or too large."""
         valid_mask = ~prune_mask
-        param_groups = prune_param_groups(self.optimizer, valid_mask)
+        param_groups = self._prune_param_groups(valid_mask)
 
         self._means = param_groups['means']
         self._sh_coefficients_0 = param_groups['sh_coefficients_0']
@@ -203,7 +253,7 @@ class Gaussians(torch.nn.Module):
         new_opacities = self._opacities[selected_mask].repeat(2, 1)
 
         # incorporate new Gaussians
-        param_groups = extend_param_groups(self.optimizer, {
+        param_groups = self._extend_param_groups({
             'means': new_means,
             'sh_coefficients_0': new_sh_coefficients_0,
             'sh_coefficients_rest': new_sh_coefficients_rest,
@@ -230,7 +280,7 @@ class Gaussians(torch.nn.Module):
         selected_mask = grads.flatten() >= grad_threshold
         selected_mask &= torch.max(self.scales, dim=1).values <= self.percent_dense * self.training_cameras_extent
 
-        param_groups = extend_param_groups(self.optimizer, {
+        param_groups = self._extend_param_groups({
             'means': self._means[selected_mask],
             'sh_coefficients_0': self._sh_coefficients_0[selected_mask],
             'sh_coefficients_rest': self._sh_coefficients_rest[selected_mask],
@@ -305,7 +355,7 @@ class Gaussians(torch.nn.Module):
 
         # incorporate
         n_new_gaussians = n_new_gaussians_duplicate + n_new_gaussians_split
-        param_groups = extend_param_groups(self.optimizer, {
+        param_groups = self._extend_param_groups({
             'means': torch.cat([duplicated_means, split_means]),
             'sh_coefficients_0': torch.cat([duplicated_sh_coefficients_0, split_sh_coefficients_0]),
             'sh_coefficients_rest': torch.cat([duplicated_sh_coefficients_rest, split_sh_coefficients_rest]),
@@ -347,7 +397,7 @@ class Gaussians(torch.nn.Module):
 
         self.prune(prune_mask)
         opacities_new = self._opacities.clamp_max(math.log(0.8 / (1.0 - 0.8)))
-        replace_param_group_data(self.optimizer, opacities_new, 'opacities')
+        self._replace_param_group_data(opacities_new, 'opacities')
 
     def prune_by_multiview_score(self, min_opacity: float, pruning_score: torch.Tensor, score_threshold: float) -> None:
         """Prunes Gaussians using FastGS multi-view pruning score."""
@@ -368,7 +418,9 @@ class Gaussians(torch.nn.Module):
 
         # clear any leftover gradients and delete optimizer
         self.optimizer.zero_grad()
+        self.sh_optimizer.zero_grad()
         self.optimizer = None
+        self.sh_optimizer = None
 
         return self.means.shape[0]
 
