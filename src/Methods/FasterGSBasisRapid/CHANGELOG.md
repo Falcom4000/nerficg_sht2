@@ -1,5 +1,53 @@
 # FasterGSBasisRapid Changelog
 
+## fastergsbasisrapid-v0.8.1 - 2026-05-10
+
+Implementation/config changes:
+
+- Replaced the v0.7 hand-written 11-channel block reduction with `cub::BlockReduce<GradientSums>`.
+- The backward kernel still accumulates the same tile/Gaussian gradient channels before one global atomic write per channel.
+- Changed `blend_backward_cu` to launch as a 1D 256-thread block and reconstruct tile-local `(x, y)` from `thread_rank`, because CUB block collectives must see the same linear block layout as the CUDA launch.
+- The change targets synchronization overhead in the v0.7 reduction path, not densification or optimizer behavior.
+- Added `configs/fastergsbasisrapid_v0_8_1_cub_reduce_1d/bicycle.yaml`, copied from v0.7 and bumped to `fastergsbasisrapid-v0.8.1`.
+
+Rejected local experiment:
+
+- A first `fastergsbasisrapid-v0.8.0` attempt used `cub::BlockReduce` under the old 2D `(16, 16)` backward block launch.
+- That run was fast but incorrect: train time `112.23s`, final Gaussians `110,196`, PSNR `9.3398`, SSIM `0.0050`, LPIPS `0.6835`.
+- The incorrect result came from the CUB collective not matching the 2D block layout, so this variant is not committed as a reusable config.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSBasisRapid \
+  --config-dir configs/fastergsbasisrapid_v0_8_1_cub_reduce_1d \
+  --repeats 1 \
+  --suite-name fastergsbasisrapid_v0_8_1_cub_reduce_1d_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | image scale | train time | training iteration time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsbasisrapid-v0.8.1 | bicycle | 0.3234937323 | 290.01s | 258.90s | 1,514,218 | 25.7638 | 0.7670 | 0.2774 | 5.48GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 130,760 -> 162,426 | 0.6529 | 0.4277 | 2.1625 | 0.2593 | 0.8693 | 4.3717 |
+| 14000-14100 | 1,718,634 -> 1,718,832 | 1.2079 | 0.4294 | 6.9147 | 0.4544 | 1.8717 | 10.8781 |
+| 25000-25100 | 1,520,020 -> 1,520,020 | 1.1039 | 0.4271 | 6.6717 | 0.0000 | 0.1403 | 8.3430 |
+
+Interpretation:
+
+- v0.8.1 preserves v0.7 quality and Gaussian count while reducing train time from `330.81s` to `290.01s`.
+- `training_iteration` time drops from `299.40s` to `258.90s`, now close to the RapidGS bicycle reference training time of `231.77s`.
+- Mid-window total time is now close to RapidGS (`10.88ms` vs `10.52ms`), but late-window backward remains slower (`6.67ms` vs `4.57ms`).
+- The remaining gap is no longer Python loss, data movement, or optimizer scheduling; it is the deeper backward rasterization strategy. Matching RapidGS further would likely require porting its bucket/warp backward structure rather than local reduction changes.
+
 ## fastergsbasisrapid-v0.7.0 - 2026-05-10
 
 Implementation/config changes:

@@ -43,7 +43,7 @@ void faster_gs::rasterization::backward(
     const float center_y)
 {
     const dim3 grid(div_round_up(width, config::tile_width), div_round_up(height, config::tile_height), 1);
-    const dim3 block(config::tile_width, config::tile_height, 1);
+    const dim3 block(config::block_size_blend, 1, 1);
     const int n_tiles = grid.x * grid.y;
     const int end_bit = extract_end_bit(n_tiles - 1) + 32;
 

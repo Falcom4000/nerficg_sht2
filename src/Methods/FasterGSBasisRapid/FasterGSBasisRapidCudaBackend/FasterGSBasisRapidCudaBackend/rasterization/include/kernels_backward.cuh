@@ -7,62 +7,42 @@
 #include "utils.h"
 #include <cstdint>
 #include <cooperative_groups.h>
+#include <cub/block/block_reduce.cuh>
 namespace cg = cooperative_groups;
 
 namespace faster_gs::rasterization::kernels::backward {
 
-    __device__ inline void block_reduce_gradient_sums(
-        cg::thread_block& block,
-        const uint thread_rank,
-        float (&scratch)[11][config::block_size_blend],
-        float& color_x,
-        float& color_y,
-        float& color_z,
-        float& opacity,
-        float& conic_x,
-        float& conic_y,
-        float& conic_z,
-        float& mean_x,
-        float& mean_y,
-        float& mean_abs_x,
-        float& mean_abs_y)
-    {
-        scratch[0][thread_rank] = color_x;
-        scratch[1][thread_rank] = color_y;
-        scratch[2][thread_rank] = color_z;
-        scratch[3][thread_rank] = opacity;
-        scratch[4][thread_rank] = conic_x;
-        scratch[5][thread_rank] = conic_y;
-        scratch[6][thread_rank] = conic_z;
-        scratch[7][thread_rank] = mean_x;
-        scratch[8][thread_rank] = mean_y;
-        scratch[9][thread_rank] = mean_abs_x;
-        scratch[10][thread_rank] = mean_abs_y;
-        block.sync();
+    struct GradientSums {
+        float color_x;
+        float color_y;
+        float color_z;
+        float opacity;
+        float conic_x;
+        float conic_y;
+        float conic_z;
+        float mean_x;
+        float mean_y;
+        float mean_abs_x;
+        float mean_abs_y;
+    };
 
-        for (uint stride = config::block_size_blend / 2; stride > 0; stride >>= 1) {
-            if (thread_rank < stride) {
-                #pragma unroll
-                for (int i = 0; i < 11; ++i) {
-                    scratch[i][thread_rank] += scratch[i][thread_rank + stride];
-                }
-            }
-            block.sync();
+    struct GradientSumsAdd {
+        __device__ __forceinline__ GradientSums operator()(const GradientSums& a, const GradientSums& b) const {
+            return {
+                a.color_x + b.color_x,
+                a.color_y + b.color_y,
+                a.color_z + b.color_z,
+                a.opacity + b.opacity,
+                a.conic_x + b.conic_x,
+                a.conic_y + b.conic_y,
+                a.conic_z + b.conic_z,
+                a.mean_x + b.mean_x,
+                a.mean_y + b.mean_y,
+                a.mean_abs_x + b.mean_abs_x,
+                a.mean_abs_y + b.mean_abs_y,
+            };
         }
-
-        color_x = scratch[0][0];
-        color_y = scratch[1][0];
-        color_z = scratch[2][0];
-        opacity = scratch[3][0];
-        conic_x = scratch[4][0];
-        conic_y = scratch[5][0];
-        conic_z = scratch[6][0];
-        mean_x = scratch[7][0];
-        mean_y = scratch[8][0];
-        mean_abs_x = scratch[9][0];
-        mean_abs_y = scratch[10][0];
-        block.sync();
-    }
+    };
 
     __global__ void preprocess_backward_cu(
         const float3* __restrict__ means,
@@ -306,9 +286,10 @@ namespace faster_gs::rasterization::kernels::backward {
     {
         auto block = cg::this_thread_block();
         const dim3 group_index = block.group_index();
-        const dim3 thread_index = block.thread_index();
         const uint thread_rank = block.thread_rank();
-        const uint2 pixel_coords = make_uint2(group_index.x * config::tile_width + thread_index.x, group_index.y * config::tile_height + thread_index.y);
+        const uint local_x = thread_rank % config::tile_width;
+        const uint local_y = thread_rank / config::tile_width;
+        const uint2 pixel_coords = make_uint2(group_index.x * config::tile_width + local_x, group_index.y * config::tile_height + local_y);
         const bool inside = pixel_coords.x < width && pixel_coords.y < height;
         const float2 pixel = make_float2(__uint2float_rn(pixel_coords.x), __uint2float_rn(pixel_coords.y)) + 0.5f;
         // setup shared memory
@@ -316,7 +297,8 @@ namespace faster_gs::rasterization::kernels::backward {
         __shared__ float2 collected_mean2d[config::block_size_blend];
         __shared__ float4 collected_conic_opacity[config::block_size_blend];
         __shared__ float3 collected_color[config::block_size_blend];
-        __shared__ float gradient_reduce_scratch[11][config::block_size_blend];
+        using GradientBlockReduce = cub::BlockReduce<GradientSums, config::block_size_blend>;
+        __shared__ typename GradientBlockReduce::TempStorage gradient_reduce_storage;
         // initialize local storage
         const float3 background = bg_color[0];
         float3 color_pixel_residual, grad_color_pixel;
@@ -443,10 +425,7 @@ namespace faster_gs::rasterization::kernels::backward {
                     }
                 }
 
-                block_reduce_gradient_sums(
-                    block,
-                    thread_rank,
-                    gradient_reduce_scratch,
+                const GradientSums gradient_sums = {
                     grad_color_x_sum,
                     grad_color_y_sum,
                     grad_color_z_sum,
@@ -458,20 +437,22 @@ namespace faster_gs::rasterization::kernels::backward {
                     grad_mean_y_sum,
                     grad_mean_abs_x_sum,
                     grad_mean_abs_y_sum
-                );
+                };
+                const GradientSums gradient_totals = GradientBlockReduce(gradient_reduce_storage).Reduce(gradient_sums, GradientSumsAdd());
+                block.sync();
 
                 if (thread_rank == 0) {
-                    if (grad_color_x_sum != 0.0f) atomicAdd(&grad_colors[primitive_idx], grad_color_x_sum);
-                    if (grad_color_y_sum != 0.0f) atomicAdd(&grad_colors[n_primitives + primitive_idx], grad_color_y_sum);
-                    if (grad_color_z_sum != 0.0f) atomicAdd(&grad_colors[2 * n_primitives + primitive_idx], grad_color_z_sum);
-                    if (grad_opacity_sum != 0.0f) atomicAdd(&grad_opacity[primitive_idx], grad_opacity_sum);
-                    if (grad_conic_x_sum != 0.0f) atomicAdd(&grad_conic[primitive_idx], grad_conic_x_sum);
-                    if (grad_conic_y_sum != 0.0f) atomicAdd(&grad_conic[n_primitives + primitive_idx], grad_conic_y_sum);
-                    if (grad_conic_z_sum != 0.0f) atomicAdd(&grad_conic[2 * n_primitives + primitive_idx], grad_conic_z_sum);
-                    if (grad_mean_x_sum != 0.0f) atomicAdd(&grad_mean2d[primitive_idx].x, grad_mean_x_sum);
-                    if (grad_mean_y_sum != 0.0f) atomicAdd(&grad_mean2d[primitive_idx].y, grad_mean_y_sum);
-                    if (grad_mean_abs_x_sum != 0.0f) atomicAdd(&grad_mean2d_abs[primitive_idx].x, grad_mean_abs_x_sum);
-                    if (grad_mean_abs_y_sum != 0.0f) atomicAdd(&grad_mean2d_abs[primitive_idx].y, grad_mean_abs_y_sum);
+                    if (gradient_totals.color_x != 0.0f) atomicAdd(&grad_colors[primitive_idx], gradient_totals.color_x);
+                    if (gradient_totals.color_y != 0.0f) atomicAdd(&grad_colors[n_primitives + primitive_idx], gradient_totals.color_y);
+                    if (gradient_totals.color_z != 0.0f) atomicAdd(&grad_colors[2 * n_primitives + primitive_idx], gradient_totals.color_z);
+                    if (gradient_totals.opacity != 0.0f) atomicAdd(&grad_opacity[primitive_idx], gradient_totals.opacity);
+                    if (gradient_totals.conic_x != 0.0f) atomicAdd(&grad_conic[primitive_idx], gradient_totals.conic_x);
+                    if (gradient_totals.conic_y != 0.0f) atomicAdd(&grad_conic[n_primitives + primitive_idx], gradient_totals.conic_y);
+                    if (gradient_totals.conic_z != 0.0f) atomicAdd(&grad_conic[2 * n_primitives + primitive_idx], gradient_totals.conic_z);
+                    if (gradient_totals.mean_x != 0.0f) atomicAdd(&grad_mean2d[primitive_idx].x, gradient_totals.mean_x);
+                    if (gradient_totals.mean_y != 0.0f) atomicAdd(&grad_mean2d[primitive_idx].y, gradient_totals.mean_y);
+                    if (gradient_totals.mean_abs_x != 0.0f) atomicAdd(&grad_mean2d_abs[primitive_idx].x, gradient_totals.mean_abs_x);
+                    if (gradient_totals.mean_abs_y != 0.0f) atomicAdd(&grad_mean2d_abs[primitive_idx].y, gradient_totals.mean_abs_y);
                 }
             }
         }
