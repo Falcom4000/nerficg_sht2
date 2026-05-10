@@ -5,7 +5,7 @@
 
 namespace faster_gs::rasterization {
 
-    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int>
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int>
     forward_wrapper(
         const torch::Tensor& means,
         const torch::Tensor& scales,
@@ -13,6 +13,7 @@ namespace faster_gs::rasterization {
         const torch::Tensor& opacities,
         const torch::Tensor& sh_coefficients_0,
         const torch::Tensor& sh_coefficients_rest,
+        const torch::Tensor& metric_map,
         const torch::Tensor& w2c,
         const torch::Tensor& cam_position,
         const torch::Tensor& bg_color,
