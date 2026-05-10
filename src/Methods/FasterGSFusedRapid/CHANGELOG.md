@@ -25,17 +25,21 @@ Experiment:
 
 | version | scene | image scale | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| fastergsfusedrapid-v0.1.1 | bicycle | 0.3234937323 | pending | pending | pending | pending | pending | pending |
+| fastergsfusedrapid-v0.1.1 | bicycle | 0.3234937323 | 482.67s | 4,390,027 | 25.6571 | 0.7636 | 0.2617 | 4.52GiB |
 
 Profiler windows:
 
 | window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| pending | pending | pending | pending | pending | pending | pending | pending |
+| 1000-1100 | 95,577 -> 117,161 | 1.0315 | 2.5433 | 1.4161 | 0.0416 | 0.0000 | 5.0325 |
+| 14000-14100 | 4,336,489 -> 4,352,024 | 2.4856 | 2.8379 | 12.1555 | 0.2169 | 0.0000 | 17.6958 |
+| 25000-25100 | 4,472,170 -> 4,472,170 | 2.4922 | 3.0484 | 12.3850 | 0.0000 | 0.0000 | 17.9257 |
 
 Interpretation:
 
-- Pending benchmark. This version exists to inspect the current fused bottleneck before changing pruning or optimizer semantics.
+- The profiler confirms that v0.1's main speed issue is Gaussian growth: by the 14k window the model already has about `4.34M` Gaussians, and backward dominates at `12.16ms`.
+- The fused CUDA Adam work is included in `backward_ms`; `optimizer_ms` remains zero as expected.
+- Next migration target is not kernel micro-optimization but BasisRapid/FastGS density control: lower `DENSIFICATION_PERCENT_DENSE`, abs-gradient split support, and multi-view pruning to keep the Gaussian count near the RapidGS/BasisRapid range.
 
 ## fastergsfusedrapid-v0.1.0 - 2026-05-10
 
