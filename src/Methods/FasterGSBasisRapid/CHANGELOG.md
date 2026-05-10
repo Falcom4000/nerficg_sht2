@@ -1,5 +1,45 @@
 # FasterGSBasisRapid Changelog
 
+## fastergsbasisrapid-v0.6.0 - 2026-05-10
+
+Implementation/config changes:
+
+- Added `configs/fastergsbasisrapid_v0_6_vram_data/bicycle.yaml`, copied from v0.5 and bumped to `fastergsbasisrapid-v0.6.0`.
+- Changed `TRAINING.DATA.PRELOADING_LEVEL` from `1` (RAM) to `2` (VRAM) for the bicycle benchmark config.
+- This matches RapidGS `Camera(..., data_device="cuda")`, where `original_image` is stored on CUDA during scene construction.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSBasisRapid \
+  --config-dir configs/fastergsbasisrapid_v0_6_vram_data \
+  --repeats 1 \
+  --suite-name fastergsbasisrapid_v0_6_vram_data_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | image scale | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsbasisrapid-v0.6.0 | bicycle | 0.3234937323 | 521.89s | 1,500,079 | 25.7339 | 0.7665 | 0.2772 | 5.46GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 130,934 -> 162,894 | 0.6904 | 0.4315 | 12.0700 | 0.2568 | 0.9082 | 14.3570 |
+| 14000-14100 | 1,705,566 -> 1,705,032 | 1.1884 | 0.4298 | 14.6512 | 0.4674 | 1.8301 | 18.5670 |
+| 25000-25100 | 1,505,583 -> 1,505,583 | 1.2002 | 0.4266 | 13.0011 | 0.0000 | 0.1470 | 14.7750 |
+
+Interpretation:
+
+- VRAM preloading reduces train time from `604.62s` to `521.89s` and keeps quality/Gaussian count stable.
+- `loss_ms` drops from about `2.5-3.0ms` to `0.43ms`, matching the RapidGS data-device behavior.
+- Peak allocated VRAM rises from `2.28GiB` to `5.46GiB`, which is expected because all training images now stay on CUDA.
+- The remaining speed gap is dominated by rasterizer backward: `13-15ms` here versus about `4.6-4.8ms` in the RapidGS reference windows.
+
 ## fastergsbasisrapid-v0.5.0 - 2026-05-10
 
 Implementation/config changes:
