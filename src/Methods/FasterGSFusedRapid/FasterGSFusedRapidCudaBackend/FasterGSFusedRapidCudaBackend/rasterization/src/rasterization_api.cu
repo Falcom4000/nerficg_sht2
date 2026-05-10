@@ -47,6 +47,8 @@ faster_gs::rasterization::forward_wrapper(
     const torch::TensorOptions byte_options = torch::TensorOptions().dtype(torch::kByte).device(torch::kCUDA);
     torch::Tensor image = torch::empty({3, height, width}, float_options);
     const bool collect_metric_counts = metric_map.size(0) > 0;
+    if (collect_metric_counts && metric_map.scalar_type() != torch::kBool)
+        throw std::runtime_error("metric_map must be a CUDA bool tensor");
     const torch::Tensor metric_map_contiguous = collect_metric_counts ? metric_map.contiguous() : metric_map;
     torch::Tensor metric_counts = collect_metric_counts ? torch::zeros({n_primitives}, int_options) : torch::empty({0}, int_options);
     torch::Tensor primitive_buffers = torch::empty({0}, byte_options);
@@ -69,7 +71,7 @@ faster_gs::rasterization::forward_wrapper(
         opacities.data_ptr<float>(),
         reinterpret_cast<float3*>(sh_coefficients_0.data_ptr<float>()),
         reinterpret_cast<float3*>(sh_coefficients_rest.data_ptr<float>()),
-        collect_metric_counts ? metric_map_contiguous.data_ptr<int>() : nullptr,
+        collect_metric_counts ? metric_map_contiguous.data_ptr<bool>() : nullptr,
         reinterpret_cast<float4*>(w2c.contiguous().data_ptr<float>()),
         reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
         reinterpret_cast<float3*>(bg_color.contiguous().data_ptr<float>()),
@@ -135,6 +137,8 @@ faster_gs::rasterization::forward_image_wrapper(
     const torch::TensorOptions byte_options = torch::TensorOptions().dtype(torch::kByte).device(torch::kCUDA);
     torch::Tensor image = torch::empty({3, height, width}, float_options);
     const bool collect_metric_counts = metric_map.size(0) > 0;
+    if (collect_metric_counts && metric_map.scalar_type() != torch::kBool)
+        throw std::runtime_error("metric_map must be a CUDA bool tensor");
     const torch::Tensor metric_map_contiguous = collect_metric_counts ? metric_map.contiguous() : metric_map;
     torch::Tensor metric_counts = collect_metric_counts ? torch::zeros({n_primitives}, int_options) : torch::empty({0}, int_options);
     torch::Tensor primitive_buffers = torch::empty({0}, byte_options);
@@ -154,7 +158,7 @@ faster_gs::rasterization::forward_image_wrapper(
         opacities.data_ptr<float>(),
         reinterpret_cast<float3*>(sh_coefficients_0.data_ptr<float>()),
         reinterpret_cast<float3*>(sh_coefficients_rest.data_ptr<float>()),
-        collect_metric_counts ? metric_map_contiguous.data_ptr<int>() : nullptr,
+        collect_metric_counts ? metric_map_contiguous.data_ptr<bool>() : nullptr,
         reinterpret_cast<float4*>(w2c.contiguous().data_ptr<float>()),
         reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
         reinterpret_cast<float3*>(bg_color.contiguous().data_ptr<float>()),

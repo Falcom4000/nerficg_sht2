@@ -195,7 +195,7 @@ def diff_rasterize(
         torch.empty(0) if moments_sh_coefficients_0 is None else moments_sh_coefficients_0,
         torch.empty(0) if moments_sh_coefficients_rest is None else moments_sh_coefficients_rest,
         densification_info,
-        torch.empty(0, dtype=torch.int32, device=means.device) if metric_map is None else metric_map,
+        torch.empty(0, dtype=torch.bool, device=means.device) if metric_map is None else metric_map,
         rasterizer_settings,
     )
     if return_metric_counts:
@@ -225,7 +225,7 @@ def rasterize_forward(
         opacities,
         sh_coefficients_0,
         sh_coefficients_rest,
-        torch.empty(0, dtype=torch.int32, device=means.device) if metric_map is None else metric_map,
+        torch.empty(0, dtype=torch.bool, device=means.device) if metric_map is None else metric_map,
         *rasterizer_settings.as_tuple(),
     )
     if return_metric_counts:

@@ -1,5 +1,46 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.3.9 - 2026-05-10
+
+Implementation/config changes:
+
+- Kept FastGS metric maps as `torch.bool` tensors in Python instead of converting them to `int32` before metric-count rendering.
+- Changed the fused CUDA forward API and `blend_cu` metric-map pointer from `const int*` to `const bool*`.
+- Added a runtime type check for non-empty metric maps in the C++ wrappers.
+- Left `metric_counts` as `int32`; only the per-pixel binary map storage and load type changed.
+- Added `configs/fastergsfusedrapid_v0_3_9_bool_metric_map/bicycle.yaml`, copied from v0.3.8 with only experiment metadata changed.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_3_9_bool_metric_map \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_3_9_bool_metric_map_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsfusedrapid-v0.3.9 | bicycle | 184.25s | 1,252,318 | 25.6789 | 0.7585 | 0.2940 | 4.64GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 113,975 -> 138,046 | 0.7696 | 0.4548 | 1.1949 | 0.2837 | 0.0000 | 2.7030 |
+| 14000-14100 | 1,361,559 -> 1,361,434 | 1.1134 | 0.4538 | 4.1638 | 0.3716 | 0.0000 | 6.1027 |
+| 25000-25100 | 1,255,957 -> 1,255,957 | 1.0819 | 0.4551 | 3.8721 | 0.0000 | 0.0000 | 5.4091 |
+
+Interpretation:
+
+- This change only affects no-grad FastGS metric-count renders during score/pruning stages; training render/backward math and density thresholds are unchanged.
+- Full train time improved slightly versus v0.3.8 (`184.61s -> 184.25s`) and quality stayed normal.
+- The `14000-14100` densify/prune average improved from `0.3770ms` to `0.3716ms`, consistent with removing Python-side bool-to-int32 conversion and reducing metric-map load width in CUDA.
+
 ## fastergsfusedrapid-v0.3.8 - 2026-05-10
 
 Implementation/config changes:

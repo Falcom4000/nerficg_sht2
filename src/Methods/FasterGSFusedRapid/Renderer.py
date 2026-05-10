@@ -108,7 +108,7 @@ class FasterGSFusedRapidRenderer(BaseRenderer):
             opacities=self.model.gaussians.raw_opacities,
             sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
             sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
-            metric_map=metric_map.reshape(-1).contiguous().to(dtype=torch.int32),
+            metric_map=metric_map.reshape(-1).contiguous(),
             rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, view.camera.background_color if bg_color is None else bg_color, 0.0, 0),
             return_metric_counts=True,
         )
