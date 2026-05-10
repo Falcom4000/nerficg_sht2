@@ -1,5 +1,45 @@
 # FasterGSBasisRapid Changelog
 
+## fastergsbasisrapid-v0.4.0 - 2026-05-10
+
+Implementation/config changes:
+
+- Added a RapidGS-style inline training loss path for `FasterGSBasisRapidLoss` when wandb logging is disabled.
+- The inline path computes `0.8 * L1 + 0.2 * DSSIM` directly and skips `BaseLoss` per-iteration logging accumulation.
+- Kept the existing `BaseLoss` path when wandb logging is enabled, so PSNR/loss logging behavior remains available for logging runs.
+- Added `configs/fastergsbasisrapid_v0_4_inline_loss/bicycle.yaml`, copied from the v0.3 profile config and bumped to `fastergsbasisrapid-v0.4.0`.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSBasisRapid \
+  --config-dir configs/fastergsbasisrapid_v0_4_inline_loss \
+  --repeats 1 \
+  --suite-name fastergsbasisrapid_v0_4_inline_loss_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | image scale | train time | n_gaussians | PSNR | SSIM | LPIPS |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsbasisrapid-v0.4.0 | bicycle | 0.3234937323 | 630.77s | 1,503,911 | 25.7365 | 0.7664 | 0.2779 |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 130,970 -> 162,617 | 1.0817 | 2.9899 | 12.2244 | 0.5400 | 1.0074 | 17.8435 |
+| 14000-14100 | 1,711,746 -> 1,712,020 | 2.3772 | 2.7659 | 14.8145 | 0.8628 | 1.9016 | 22.7219 |
+| 25000-25100 | 1,509,697 -> 1,509,697 | 2.2043 | 2.5823 | 13.1642 | 0.0000 | 0.1445 | 18.0954 |
+
+Interpretation:
+
+- Inline loss is functionally correct and keeps quality/Gaussian count stable.
+- Training time only improves from `639.67s` to `630.77s`; the remaining speed gap is still dominated by rasterizer backward and training graph overhead.
+- The next optimization target is the backend SH/rasterization interface, especially removing the Python-side full-SH `torch.cat` path and matching RapidGS split DC/rest inputs.
+
 ## fastergsbasisrapid-v0.3.0 - 2026-05-10
 
 Implementation/config changes:
