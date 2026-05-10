@@ -210,11 +210,24 @@ class Gaussians(torch.nn.Module):
     def reset_densification_info(self):
         self._densification_info = torch.zeros((3, self._means.shape[0]), dtype=torch.float32, device='cuda')
 
-    def adaptive_density_control(self, grad_threshold: float, abs_grad_threshold: float, min_opacity: float, prune_large_gaussians: bool) -> None:
+    def adaptive_density_control(
+        self,
+        grad_threshold: float,
+        abs_grad_threshold: float,
+        min_opacity: float,
+        prune_large_gaussians: bool,
+        importance_score: torch.Tensor | None = None,
+        importance_threshold: float = 0.0,
+        pruning_score: torch.Tensor | None = None,
+    ) -> None:
         """Densify Gaussians and prune those that are not visible or too large."""
         denominator = self.densification_info[0].clamp_min(1.0)
         clone_candidate_mask = self.densification_info[1] >= grad_threshold * denominator
         split_candidate_mask = self.densification_info[2] >= abs_grad_threshold * denominator
+        if importance_score is not None:
+            importance_mask = importance_score[:clone_candidate_mask.shape[0]].to(clone_candidate_mask.device) > importance_threshold
+            clone_candidate_mask &= importance_mask
+            split_candidate_mask &= importance_mask
         is_small = torch.max(self._scales, dim=1).values <= math.log(self.percent_dense * self.training_cameras_extent)
 
         # duplicate small gaussians
@@ -257,19 +270,43 @@ class Gaussians(torch.nn.Module):
         # if it was set, densification info is now no longer valid
         self._densification_info = None
 
-        # prune
-        prune_mask = torch.cat([split_mask, torch.zeros(n_new_gaussians, dtype=torch.bool, device='cuda')])
-        prune_mask |= self._opacities.flatten() < math.log(min_opacity / (1 - min_opacity))
-        prune_mask |= self._rotations.mul(self._rotations).sum(dim=1) < 1e-8
+        split_prune_mask = torch.cat([split_mask, torch.zeros(n_new_gaussians, dtype=torch.bool, device='cuda')])
+        self.prune(split_prune_mask)
+
+        prune_mask = self._opacities.flatten() < math.log(min_opacity / (1 - min_opacity))
         if prune_large_gaussians:
             prune_mask |= self._scales.max(dim=1).values > math.log(0.1 * self.training_cameras_extent)
+
+        if pruning_score is not None:
+            scores = 1.0 - pruning_score.to(device=prune_mask.device, dtype=torch.float32).flatten()
+            sample_weights = torch.zeros(prune_mask.shape[0], dtype=torch.float32, device=prune_mask.device)
+            sample_weights[:scores.shape[0]] = 1.0 / (1e-6 + scores.clamp_min(0.0))
+            remove_budget = int(0.5 * prune_mask.sum().item())
+            if remove_budget > 0 and sample_weights.sum() > 0:
+                sampled_indices = torch.multinomial(
+                    sample_weights,
+                    min(remove_budget, sample_weights.count_nonzero().item()),
+                    replacement=False,
+                )
+                selected_mask = torch.zeros_like(prune_mask)
+                selected_mask[sampled_indices] = True
+                prune_mask &= selected_mask
+
         self.prune(prune_mask)
+        self._opacities.clamp_max_(math.log(0.8 / (1.0 - 0.8)))
+        self.moments_opacities.zero_()
 
     def apply_morton_ordering(self) -> None:
         """Applies Morton ordering to the Gaussians."""
         morton_encoding = morton_encode(self._means.data)
         order = torch.argsort(morton_encoding)
         self.sort(order)
+
+    def prune_by_multiview_score(self, min_opacity: float, pruning_score: torch.Tensor, score_threshold: float) -> None:
+        """Prunes Gaussians using FastGS multi-view pruning score."""
+        prune_mask = self.opacities.flatten() < min_opacity
+        prune_mask |= pruning_score[:prune_mask.shape[0]].to(prune_mask.device) > score_threshold
+        self.prune(prune_mask)
 
     @torch.no_grad()
     def training_cleanup(self, min_opacity: float) -> int:

@@ -85,6 +85,40 @@ class FasterGSFusedRapidRenderer(BaseRenderer):
         return image, autograd_dummy
 
     @torch.no_grad()
+    def render_image_fastgs_score(self, view: View, bg_color: torch.Tensor = None) -> torch.Tensor:
+        """Renders an unclamped image for FastGS score computation without optimizer updates."""
+        image, _ = diff_rasterize(
+            means=self.model.gaussians.means,
+            scales=self.model.gaussians.raw_scales,
+            rotations=self.model.gaussians.raw_rotations,
+            opacities=self.model.gaussians.raw_opacities,
+            sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
+            sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
+            autograd_dummy=torch.empty(0, device=self.model.gaussians.means.device),
+            densification_info=torch.empty(0, device=self.model.gaussians.means.device),
+            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, view.camera.background_color if bg_color is None else bg_color, 0.0, 0),
+        )
+        return image
+
+    @torch.no_grad()
+    def render_image_metric_counts(self, view: View, metric_map: torch.Tensor, bg_color: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """Renders an image and counts high-error pixel hits per Gaussian."""
+        image, metric_counts = diff_rasterize(
+            means=self.model.gaussians.means,
+            scales=self.model.gaussians.raw_scales,
+            rotations=self.model.gaussians.raw_rotations,
+            opacities=self.model.gaussians.raw_opacities,
+            sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
+            sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
+            autograd_dummy=torch.empty(0, device=self.model.gaussians.means.device),
+            densification_info=torch.empty(0, device=self.model.gaussians.means.device),
+            metric_map=metric_map.reshape(-1).contiguous().to(dtype=torch.int32),
+            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, view.camera.background_color if bg_color is None else bg_color, 0.0, 0),
+            return_metric_counts=True,
+        )
+        return image, metric_counts
+
+    @torch.no_grad()
     def render_image_inference(self, view: View, to_chw: bool = False) -> dict[str, torch.Tensor]:
         """Renders an image for a given view."""
         image, _ = diff_rasterize(
