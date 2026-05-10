@@ -123,6 +123,7 @@ faster_gs::rasterization::backward_wrapper(
     torch::Tensor grad_opacities = torch::zeros({n_primitives, 1}, float_options);
     torch::Tensor grad_sh_coefficients = torch::zeros({n_primitives, total_sh_bases, 3}, float_options);
     torch::Tensor grad_mean2d_helper = torch::zeros({n_primitives, 2}, float_options);
+    torch::Tensor grad_mean2d_abs_helper = torch::zeros({n_primitives, 2}, float_options);
     torch::Tensor grad_conic_helper = torch::zeros({3, n_primitives}, float_options);
     torch::Tensor grad_color_helper = torch::zeros({3, n_primitives}, float_options);
 
@@ -147,6 +148,7 @@ faster_gs::rasterization::backward_wrapper(
         reinterpret_cast<float*>(grad_opacities.data_ptr<float>()),
         reinterpret_cast<float3*>(grad_sh_coefficients.data_ptr<float>()),
         reinterpret_cast<float2*>(grad_mean2d_helper.data_ptr<float>()),
+        reinterpret_cast<float2*>(grad_mean2d_abs_helper.data_ptr<float>()),
         grad_conic_helper.data_ptr<float>(),
         grad_color_helper.data_ptr<float>(),
         update_densification_info ? densification_info.data_ptr<float>() : nullptr,

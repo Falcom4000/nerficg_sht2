@@ -20,6 +20,7 @@ namespace faster_gs::rasterization::kernels::backward {
         const float3* __restrict__ cam_position,
         const uint* __restrict__ primitive_n_touched_tiles,
         const float2* __restrict__ grad_mean2d,
+        const float2* __restrict__ grad_mean2d_abs,
         const float* __restrict__ grad_conic,
         const float* __restrict__ grad_colors,
         float3* __restrict__ grad_means,
@@ -164,6 +165,12 @@ namespace faster_gs::rasterization::kernels::backward {
                 dL_dmean2d.y * height
             );
             densification_info[n_primitives + primitive_idx] += length(dL_dmean2d_ndc);
+            const float2 dL_dmean2d_abs = grad_mean2d_abs[primitive_idx];
+            const float2 dL_dmean2d_abs_ndc = 0.5f * make_float2(
+                dL_dmean2d_abs.x * width,
+                dL_dmean2d_abs.y * height
+            );
+            densification_info[2 * n_primitives + primitive_idx] += length(dL_dmean2d_abs_ndc);
         }
 
         // mean3d camera space gradient from mean2d
@@ -233,6 +240,7 @@ namespace faster_gs::rasterization::kernels::backward {
         const float* __restrict__ image,
         const float* __restrict__ tile_final_transmittances,
         float2* __restrict__ grad_mean2d,
+        float2* __restrict__ grad_mean2d_abs,
         float* __restrict__ grad_conic,
         float* __restrict__ grad_opacity,
         float* __restrict__ grad_colors,
@@ -355,6 +363,8 @@ namespace faster_gs::rasterization::kernels::backward {
                 );
                 atomicAdd(&grad_mean2d[primitive_idx].x, dL_dmean2d.x);
                 atomicAdd(&grad_mean2d[primitive_idx].y, dL_dmean2d.y);
+                atomicAdd(&grad_mean2d_abs[primitive_idx].x, fabsf(dL_dmean2d.x));
+                atomicAdd(&grad_mean2d_abs[primitive_idx].y, fabsf(dL_dmean2d.y));
 
                 // update transmittance
                 transmittance = next_transmittance;

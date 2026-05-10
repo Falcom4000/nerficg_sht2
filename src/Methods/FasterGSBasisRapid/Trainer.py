@@ -22,6 +22,7 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
     DENSIFICATION_END_ITERATION=14_900,  # while official code states 15000, densification actually stops at 14900 there
     DENSIFICATION_INTERVAL=100,
     DENSIFICATION_GRAD_THRESHOLD=0.0002,
+    DENSIFICATION_ABS_GRAD_THRESHOLD=0.0012,
     DENSIFICATION_PERCENT_DENSE=0.01,
     OPACITY_RESET_INTERVAL=3_000,
     EXTRA_OPACITY_RESET_ITERATION=500,
@@ -159,13 +160,15 @@ class FasterGSBasisRapidTrainer(GuiTrainer):
     @torch.no_grad()
     def densify(self, iteration: int, dataset: 'BaseDataset') -> None:
         """Apply densification."""
-        importance_score, _ = self.compute_fastgs_scores(dataset, compute_importance=True)
+        importance_score, pruning_score = self.compute_fastgs_scores(dataset, compute_importance=True)
         self.model.gaussians.adaptive_density_control(
             self.DENSIFICATION_GRAD_THRESHOLD,
+            self.DENSIFICATION_ABS_GRAD_THRESHOLD,
             0.005,
             iteration > self.OPACITY_RESET_INTERVAL,
             importance_score=importance_score,
             importance_threshold=self.FASTGS_IMPORTANCE_THRESHOLD,
+            pruning_score=pruning_score,
         )
         if iteration < self.DENSIFICATION_END_ITERATION:
             self.model.gaussians.reset_densification_info()

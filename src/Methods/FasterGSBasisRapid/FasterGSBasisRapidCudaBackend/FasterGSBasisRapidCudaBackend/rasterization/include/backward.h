@@ -24,6 +24,7 @@ namespace faster_gs::rasterization {
         float* grad_opacities,
         float3* grad_sh_coefficients,
         float2* grad_mean2d_helper,
+        float2* grad_mean2d_abs_helper,
         float* grad_conic_helper,
         float* grad_color_helper,
         float* densification_info,
