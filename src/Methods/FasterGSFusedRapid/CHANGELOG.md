@@ -1,5 +1,45 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.3.8 - 2026-05-10
+
+Implementation/config changes:
+
+- Reused the fused backward `grad_conic` helper allocation for opacity gradients by allocating a 4-plane `{4, n_primitives}` helper.
+- Passed the fourth plane as `grad_opacities`, while the first three planes remain the conic gradient layout consumed by `preprocess_backward_cu`.
+- Removed the separate `{n_primitives, 1}` opacity-gradient tensor allocation and zero-fill from the autograd backward wrapper.
+- Added `configs/fastergsfusedrapid_v0_3_8_fuse_grad_opacity_buffer/bicycle.yaml`, copied from v0.3.7 with only experiment metadata changed.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_3_8_fuse_grad_opacity_buffer \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_3_8_fuse_grad_opacity_buffer_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsfusedrapid-v0.3.8 | bicycle | 184.61s | 1,246,385 | 25.6242 | 0.7587 | 0.2936 | 4.63GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 114,247 -> 139,226 | 0.7750 | 0.4572 | 1.2103 | 0.2881 | 0.0000 | 2.7307 |
+| 14000-14100 | 1,354,702 -> 1,354,566 | 1.1049 | 0.4517 | 4.1344 | 0.3770 | 0.0000 | 6.0679 |
+| 25000-25100 | 1,250,066 -> 1,250,066 | 1.1120 | 0.4554 | 3.8928 | 0.0000 | 0.0000 | 5.4601 |
+
+Interpretation:
+
+- The buffer reuse is semantically exact: `blend_backward_cu` writes the same opacity gradient values, and `preprocess_backward_cu` reads them through the same `float*` interface.
+- Full train time improved modestly versus v0.3.7 (`185.54s -> 184.61s`) with quality and Gaussian count in the same normal range.
+- The profiler window deltas are mixed (`14000-14100` backward improved, `25000-25100` regressed), so this should be treated as a small allocation/zero-fill cleanup rather than a major kernel-level speedup.
+
 ## fastergsfusedrapid-v0.3.7 - 2026-05-10
 
 Implementation/config changes:

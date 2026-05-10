@@ -218,12 +218,12 @@ void faster_gs::rasterization::backward_wrapper(
     const int total_sh_bases = sh_coefficients_rest.size(1);
     const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
     torch::Tensor grad_colors = torch::zeros({n_primitives, 3}, float_options);
-    torch::Tensor grad_opacities = torch::zeros({n_primitives, 1}, float_options); // TODO: fuse into grad_conic_helper
     torch::Tensor grad_mean2d_helper = torch::zeros({n_primitives, 2}, float_options);
-    torch::Tensor grad_conic_helper = torch::zeros({3, n_primitives}, float_options);
+    torch::Tensor grad_conic_opacity_helper = torch::zeros({4, n_primitives}, float_options);
 
     const bool update_densification_info = densification_info.size(0) > 0;
     torch::Tensor grad_mean2d_abs_helper = update_densification_info ? torch::zeros({n_primitives, 2}, float_options) : torch::empty({0}, float_options);
+    float* grad_conic_opacity_ptr = grad_conic_opacity_helper.data_ptr<float>();
 
     backward(
         grad_image.contiguous().data_ptr<float>(),
@@ -247,11 +247,11 @@ void faster_gs::rasterization::backward_wrapper(
         reinterpret_cast<char*>(tile_buffers.data_ptr()),
         reinterpret_cast<char*>(instance_buffers.data_ptr()),
         reinterpret_cast<char*>(bucket_buffers.data_ptr()),
-        reinterpret_cast<float*>(grad_opacities.data_ptr<float>()),
+        grad_conic_opacity_ptr + 3 * n_primitives,
         reinterpret_cast<float3*>(grad_colors.data_ptr<float>()),
         reinterpret_cast<float2*>(grad_mean2d_helper.data_ptr<float>()),
         update_densification_info ? reinterpret_cast<float2*>(grad_mean2d_abs_helper.data_ptr<float>()) : nullptr,
-        grad_conic_helper.data_ptr<float>(),
+        grad_conic_opacity_ptr,
         update_densification_info ? densification_info.data_ptr<float>() : nullptr,
         n_primitives,
         n_instances,
