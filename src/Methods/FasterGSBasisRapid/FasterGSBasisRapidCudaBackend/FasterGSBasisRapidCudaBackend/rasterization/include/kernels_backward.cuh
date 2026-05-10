@@ -264,6 +264,197 @@ namespace faster_gs::rasterization::kernels::backward {
 
     }
 
+    __global__ void __launch_bounds__(32) bucket_blend_backward_cu(
+        const uint2* __restrict__ tile_instance_ranges,
+        const uint* __restrict__ instance_primitive_indices,
+        const uint* __restrict__ tile_bucket_offsets,
+        const uint* __restrict__ bucket_to_tile,
+        const float* __restrict__ sampled_transmittance,
+        const float* __restrict__ sampled_accumulated_color,
+        const float2* __restrict__ primitive_mean2d,
+        const float4* __restrict__ primitive_conic_opacity,
+        const float3* __restrict__ primitive_color,
+        const float3* __restrict__ bg_color,
+        const float* __restrict__ grad_image,
+        const float* __restrict__ image_without_bg,
+        const float* __restrict__ tile_final_transmittances,
+        const uint* __restrict__ tile_n_contrib,
+        const uint* __restrict__ tile_max_contrib,
+        float2* __restrict__ grad_mean2d,
+        float2* __restrict__ grad_mean2d_abs,
+        float* __restrict__ grad_conic,
+        float* __restrict__ grad_opacity,
+        float* __restrict__ grad_colors,
+        const uint n_primitives,
+        const uint n_buckets,
+        const uint width,
+        const uint height,
+        const uint grid_width)
+    {
+        auto block = cg::this_thread_block();
+        auto warp = cg::tiled_partition<32>(block);
+        const uint global_bucket_idx = blockIdx.x;
+        if (global_bucket_idx >= n_buckets) return;
+
+        const uint tile_idx = bucket_to_tile[global_bucket_idx];
+        const uint2 tile_range = tile_instance_ranges[tile_idx];
+        const uint n_splats_in_tile = tile_range.y - tile_range.x;
+        const uint bucket_base = tile_idx == 0 ? 0 : tile_bucket_offsets[tile_idx - 1];
+        const uint bucket_idx_in_tile = global_bucket_idx - bucket_base;
+        const uint splat_idx_in_tile = bucket_idx_in_tile * 32 + warp.thread_rank();
+        const bool valid_splat = splat_idx_in_tile < n_splats_in_tile;
+
+        if (bucket_idx_in_tile * 32 >= tile_max_contrib[tile_idx]) return;
+
+        uint primitive_idx = 0;
+        float2 mean2d = make_float2(0.0f);
+        float4 conic_opacity = make_float4(0.0f);
+        float3 color_unclamped = make_float3(0.0f);
+        float3 color = make_float3(0.0f);
+        if (valid_splat) {
+            primitive_idx = instance_primitive_indices[tile_range.x + splat_idx_in_tile];
+            mean2d = primitive_mean2d[primitive_idx];
+            conic_opacity = primitive_conic_opacity[primitive_idx];
+            color_unclamped = primitive_color[primitive_idx];
+            color = fmaxf(color_unclamped, 0.0f);
+        }
+
+        float grad_mean_x = 0.0f;
+        float grad_mean_y = 0.0f;
+        float grad_mean_abs_x = 0.0f;
+        float grad_mean_abs_y = 0.0f;
+        float grad_conic_x = 0.0f;
+        float grad_conic_y = 0.0f;
+        float grad_conic_z = 0.0f;
+        float grad_opacity_value = 0.0f;
+        float3 grad_color = make_float3(0.0f);
+
+        const uint tile_x = tile_idx % grid_width;
+        const uint tile_y = tile_idx / grid_width;
+        const uint2 pix_min = make_uint2(tile_x * config::tile_width, tile_y * config::tile_height);
+        const uint n_pixels = width * height;
+        const float3 background = bg_color[0];
+
+        float transmittance;
+        float final_transmittance;
+        uint last_contributor;
+        float3 accumulated_remainder;
+        float3 grad_color_pixel;
+
+        __shared__ float shared_sampled_accumulated_color[32 * 3];
+        __shared__ float shared_pixel_color[32 * 3];
+
+        for (int i = 0; i < config::block_size_blend + 31; ++i) {
+            if ((i & 31) == 0 && i < config::block_size_blend) {
+                const uint local_id = i + block.thread_rank();
+                const uint2 pix = make_uint2(pix_min.x + local_id % config::tile_width, pix_min.y + local_id / config::tile_width);
+                const bool valid_pixel_load = pix.x < width && pix.y < height;
+                const uint pixel_idx = width * pix.y + pix.x;
+                const uint sampled_base = global_bucket_idx * config::block_size_blend * 3 + local_id;
+                shared_sampled_accumulated_color[block.thread_rank()] = sampled_accumulated_color[sampled_base];
+                shared_sampled_accumulated_color[32 + block.thread_rank()] = sampled_accumulated_color[config::block_size_blend + sampled_base];
+                shared_sampled_accumulated_color[64 + block.thread_rank()] = sampled_accumulated_color[2 * config::block_size_blend + sampled_base];
+                shared_pixel_color[block.thread_rank()] = valid_pixel_load ? image_without_bg[pixel_idx] : 0.0f;
+                shared_pixel_color[32 + block.thread_rank()] = valid_pixel_load ? image_without_bg[n_pixels + pixel_idx] : 0.0f;
+                shared_pixel_color[64 + block.thread_rank()] = valid_pixel_load ? image_without_bg[2 * n_pixels + pixel_idx] : 0.0f;
+                block.sync();
+            }
+
+            transmittance = warp.shfl_up(transmittance, 1);
+            final_transmittance = warp.shfl_up(final_transmittance, 1);
+            last_contributor = warp.shfl_up(last_contributor, 1);
+            accumulated_remainder.x = warp.shfl_up(accumulated_remainder.x, 1);
+            accumulated_remainder.y = warp.shfl_up(accumulated_remainder.y, 1);
+            accumulated_remainder.z = warp.shfl_up(accumulated_remainder.z, 1);
+            grad_color_pixel.x = warp.shfl_up(grad_color_pixel.x, 1);
+            grad_color_pixel.y = warp.shfl_up(grad_color_pixel.y, 1);
+            grad_color_pixel.z = warp.shfl_up(grad_color_pixel.z, 1);
+
+            const int local_pixel_id = i - warp.thread_rank();
+            const bool in_tile_pixel = 0 <= local_pixel_id && local_pixel_id < config::block_size_blend;
+            const uint local_pixel_idx = in_tile_pixel ? static_cast<uint>(local_pixel_id) : 0u;
+            const uint2 pix = make_uint2(pix_min.x + local_pixel_idx % config::tile_width, pix_min.y + local_pixel_idx / config::tile_width);
+            const bool valid_local_pixel = in_tile_pixel && pix.x < width && pix.y < height;
+            const uint pixel_idx = valid_local_pixel ? width * pix.y + pix.x : 0u;
+
+            if (valid_splat && valid_local_pixel && warp.thread_rank() == 0) {
+                const uint sampled_base = global_bucket_idx * config::block_size_blend + local_pixel_id;
+                const uint shared_idx = i & 31;
+                transmittance = sampled_transmittance[sampled_base];
+                accumulated_remainder = make_float3(
+                    shared_sampled_accumulated_color[shared_idx] - shared_pixel_color[shared_idx],
+                    shared_sampled_accumulated_color[32 + shared_idx] - shared_pixel_color[32 + shared_idx],
+                    shared_sampled_accumulated_color[64 + shared_idx] - shared_pixel_color[64 + shared_idx]
+                );
+                final_transmittance = tile_final_transmittances[pixel_idx];
+                last_contributor = tile_n_contrib[pixel_idx];
+                grad_color_pixel = make_float3(
+                    grad_image[pixel_idx],
+                    grad_image[n_pixels + pixel_idx],
+                    grad_image[2 * n_pixels + pixel_idx]
+                );
+            }
+
+            if (valid_splat && valid_local_pixel) {
+                if (splat_idx_in_tile >= last_contributor) continue;
+
+                const float2 pixel = make_float2(__uint2float_rn(pix.x), __uint2float_rn(pix.y)) + 0.5f;
+                const float2 delta = mean2d - pixel;
+                float exponent = -0.5f * (conic_opacity.x * delta.x * delta.x + conic_opacity.z * delta.y * delta.y) - conic_opacity.y * delta.x * delta.y;
+                if (!config::original_stability_measures) exponent = fminf(exponent, 0.0f);
+                else if (exponent > 0.0f) continue;
+
+                const float gaussian = expf(exponent);
+                const float fragment_alpha = conic_opacity.w * gaussian;
+                if (fragment_alpha < config::min_alpha_threshold) continue;
+                const float alpha = config::original_stability_measures ? fminf(fragment_alpha, config::max_fragment_alpha) : fragment_alpha;
+                const float one_minus_alpha = 1.0f - alpha;
+                const float one_minus_alpha_rcp = 1.0f / (config::original_stability_measures ? one_minus_alpha : fmaxf(one_minus_alpha, config::one_minus_alpha_eps));
+                const float blending_weight = alpha * transmittance;
+
+                accumulated_remainder += blending_weight * color;
+                grad_color.x += color_unclamped.x >= 0.0f ? blending_weight * grad_color_pixel.x : 0.0f;
+                grad_color.y += color_unclamped.y >= 0.0f ? blending_weight * grad_color_pixel.y : 0.0f;
+                grad_color.z += color_unclamped.z >= 0.0f ? blending_weight * grad_color_pixel.z : 0.0f;
+
+                float grad_alpha = 0.0f;
+                grad_alpha += (color.x * transmittance + one_minus_alpha_rcp * accumulated_remainder.x) * grad_color_pixel.x;
+                grad_alpha += (color.y * transmittance + one_minus_alpha_rcp * accumulated_remainder.y) * grad_color_pixel.y;
+                grad_alpha += (color.z * transmittance + one_minus_alpha_rcp * accumulated_remainder.z) * grad_color_pixel.z;
+                grad_alpha += (-final_transmittance * one_minus_alpha_rcp) * dot(background, grad_color_pixel);
+                transmittance *= one_minus_alpha;
+
+                const float gaussian_grad_helper = -alpha * grad_alpha;
+                const float2 dL_dmean2d = gaussian_grad_helper * make_float2(
+                    conic_opacity.x * delta.x + conic_opacity.y * delta.y,
+                    conic_opacity.y * delta.x + conic_opacity.z * delta.y
+                );
+                grad_mean_x += dL_dmean2d.x;
+                grad_mean_y += dL_dmean2d.y;
+                grad_mean_abs_x += fabsf(dL_dmean2d.x);
+                grad_mean_abs_y += fabsf(dL_dmean2d.y);
+                grad_conic_x += 0.5f * gaussian_grad_helper * delta.x * delta.x;
+                grad_conic_y += 0.5f * gaussian_grad_helper * delta.x * delta.y;
+                grad_conic_z += 0.5f * gaussian_grad_helper * delta.y * delta.y;
+                grad_opacity_value += gaussian * grad_alpha;
+            }
+        }
+
+        if (valid_splat) {
+            if (grad_color.x != 0.0f) atomicAdd(&grad_colors[primitive_idx], grad_color.x);
+            if (grad_color.y != 0.0f) atomicAdd(&grad_colors[n_primitives + primitive_idx], grad_color.y);
+            if (grad_color.z != 0.0f) atomicAdd(&grad_colors[2 * n_primitives + primitive_idx], grad_color.z);
+            if (grad_opacity_value != 0.0f) atomicAdd(&grad_opacity[primitive_idx], grad_opacity_value);
+            if (grad_conic_x != 0.0f) atomicAdd(&grad_conic[primitive_idx], grad_conic_x);
+            if (grad_conic_y != 0.0f) atomicAdd(&grad_conic[n_primitives + primitive_idx], grad_conic_y);
+            if (grad_conic_z != 0.0f) atomicAdd(&grad_conic[2 * n_primitives + primitive_idx], grad_conic_z);
+            if (grad_mean_x != 0.0f) atomicAdd(&grad_mean2d[primitive_idx].x, grad_mean_x);
+            if (grad_mean_y != 0.0f) atomicAdd(&grad_mean2d[primitive_idx].y, grad_mean_y);
+            if (grad_mean_abs_x != 0.0f) atomicAdd(&grad_mean2d_abs[primitive_idx].x, grad_mean_abs_x);
+            if (grad_mean_abs_y != 0.0f) atomicAdd(&grad_mean2d_abs[primitive_idx].y, grad_mean_abs_y);
+        }
+    }
+
     __global__ void __launch_bounds__(config::block_size_blend) blend_backward_cu(
         const uint2* __restrict__ tile_instance_ranges,
         const uint* __restrict__ instance_primitive_indices,

@@ -7,10 +7,11 @@
 #include <cub/cub.cuh>
 #include <functional>
 
-std::tuple<int, int> faster_gs::rasterization::forward(
+std::tuple<int, int, int> faster_gs::rasterization::forward(
     std::function<char* (size_t)> resize_primitive_buffers,
     std::function<char* (size_t)> resize_tile_buffers,
     std::function<char* (size_t)> resize_instance_buffers,
+    std::function<char* (size_t)> resize_sample_buffers,
     const float3* means,
     const float3* scales,
     const float4* rotations,
@@ -41,8 +42,9 @@ std::tuple<int, int> faster_gs::rasterization::forward(
     const int n_tiles = grid.x * grid.y;
     const int end_bit = extract_end_bit(n_tiles - 1) + 32;
 
-    char* tile_buffers_blob = resize_tile_buffers(required<TileBuffers>(n_tiles));
-    TileBuffers tile_buffers = TileBuffers::from_blob(tile_buffers_blob, n_tiles);
+    const int n_pixels = width * height;
+    char* tile_buffers_blob = resize_tile_buffers(required<TileBuffers>(n_tiles, n_pixels));
+    TileBuffers tile_buffers = TileBuffers::from_blob(tile_buffers_blob, n_tiles, n_pixels);
 
     static cudaStream_t memset_stream = 0;
     if constexpr (!config::debug) {
@@ -142,15 +144,44 @@ std::tuple<int, int> faster_gs::rasterization::forward(
         CHECK_CUDA(config::debug, "extract_instance_ranges")
     }
 
+    kernels::forward::count_tile_buckets_cu<<<div_round_up(n_tiles, config::block_size_extract_instance_ranges), config::block_size_extract_instance_ranges>>>(
+        tile_buffers.instance_ranges,
+        tile_buffers.bucket_count,
+        n_tiles
+    );
+    CHECK_CUDA(config::debug, "count_tile_buckets")
+
+    cub::DeviceScan::InclusiveSum(
+        tile_buffers.bucket_count_cub_workspace,
+        tile_buffers.bucket_count_cub_workspace_size,
+        tile_buffers.bucket_count,
+        tile_buffers.bucket_offsets,
+        n_tiles
+    );
+    CHECK_CUDA(config::debug, "cub::DeviceScan::InclusiveSum buckets")
+
+    int n_buckets;
+    cudaMemcpy(&n_buckets, tile_buffers.bucket_offsets + n_tiles - 1, sizeof(int), cudaMemcpyDeviceToHost);
+
+    char* sample_buffers_blob = resize_sample_buffers(required<SampleBuffers>(n_buckets));
+    SampleBuffers sample_buffers = SampleBuffers::from_blob(sample_buffers_blob, n_buckets);
+
     kernels::forward::blend_cu<<<grid, block>>>(
         tile_buffers.instance_ranges,
         instance_buffers.primitive_indices.Current(),
+        tile_buffers.bucket_offsets,
+        sample_buffers.bucket_to_tile,
+        sample_buffers.transmittance,
+        sample_buffers.accumulated_color,
         primitive_buffers.mean2d,
         primitive_buffers.conic_opacity,
         primitive_buffers.color,
         bg_color,
         image,
         tile_buffers.final_transmittances,
+        tile_buffers.n_contrib,
+        tile_buffers.max_contrib,
+        tile_buffers.pixel_colors,
         metric_map,
         metric_counts,
         width,
@@ -159,6 +190,6 @@ std::tuple<int, int> faster_gs::rasterization::forward(
     );
     CHECK_CUDA(config::debug, "blend")
 
-    return {n_instances, instance_buffers.primitive_indices.selector};
+    return {n_instances, n_buckets, instance_buffers.primitive_indices.selector};
 
 }

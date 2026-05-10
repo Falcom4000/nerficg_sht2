@@ -58,8 +58,8 @@ class _Rasterize(torch.autograd.Function):
         (
             image,
             metric_counts,
-            primitive_buffers, tile_buffers, instance_buffers,
-            n_instances, instance_primitive_indices_selector
+            primitive_buffers, tile_buffers, instance_buffers, sample_buffers,
+            n_instances, n_buckets, instance_primitive_indices_selector
         ) = _C.forward(
             means,
             scales,
@@ -71,7 +71,7 @@ class _Rasterize(torch.autograd.Function):
             *rasterizer_settings.as_tuple(),
         )
         ctx.rasterizer_settings = rasterizer_settings
-        ctx.buffer_state = (n_instances, instance_primitive_indices_selector)
+        ctx.buffer_state = (n_instances, n_buckets, instance_primitive_indices_selector)
         ctx.save_for_backward(
             image,
             means,
@@ -82,6 +82,7 @@ class _Rasterize(torch.autograd.Function):
             primitive_buffers,
             tile_buffers,
             instance_buffers,
+            sample_buffers,
         )
         ctx.densification_info = densification_info
         ctx.mark_non_differentiable(densification_info, metric_counts)

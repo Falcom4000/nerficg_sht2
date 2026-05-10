@@ -380,15 +380,34 @@ namespace faster_gs::rasterization::kernels::forward {
         if (instance_idx == n_instances - 1) tile_instance_ranges[instance_tile_idx].y = n_instances;
     }
 
+    __global__ void count_tile_buckets_cu(
+        const uint2* __restrict__ tile_instance_ranges,
+        uint* __restrict__ tile_bucket_counts,
+        const uint n_tiles)
+    {
+        const uint tile_idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if (tile_idx >= n_tiles) return;
+        const uint2 range = tile_instance_ranges[tile_idx];
+        const uint n_instances = range.y - range.x;
+        tile_bucket_counts[tile_idx] = div_round_up(n_instances, 32u);
+    }
+
     __global__ void __launch_bounds__(config::block_size_blend) blend_cu(
         const uint2* __restrict__ tile_instance_ranges,
         const uint* __restrict__ instance_primitive_indices,
+        const uint* __restrict__ tile_bucket_offsets,
+        uint* __restrict__ bucket_to_tile,
+        float* __restrict__ sampled_transmittance,
+        float* __restrict__ sampled_accumulated_color,
         const float2* __restrict__ primitive_mean2d,
         const float4* __restrict__ primitive_conic_opacity,
         const float3* __restrict__ primitive_color,
         const float3* __restrict__ bg_color,
         float* __restrict__ image,
         float* __restrict__ tile_final_transmittances,
+        uint* __restrict__ tile_n_contrib,
+        uint* __restrict__ tile_max_contrib,
+        float* __restrict__ tile_pixel_colors,
         const int* __restrict__ metric_map,
         int* __restrict__ metric_counts,
         const uint width,
@@ -407,12 +426,22 @@ namespace faster_gs::rasterization::kernels::forward {
         __shared__ float2 collected_mean2d[config::block_size_blend];
         __shared__ float4 collected_conic_opacity[config::block_size_blend];
         __shared__ float3 collected_color[config::block_size_blend];
+        __shared__ uint max_contrib_scratch[config::block_size_blend];
         // initialize local storage
         float3 color_pixel = make_float3(0.0f);
         float transmittance = 1.0f;
+        uint contributor = 0;
+        uint last_contributor = 0;
         bool done = !inside;
         // collaborative loading and processing
-        const uint2 tile_range = tile_instance_ranges[group_index.y * grid_width + group_index.x];
+        const uint tile_idx = group_index.y * grid_width + group_index.x;
+        const uint2 tile_range = tile_instance_ranges[tile_idx];
+        uint bucket_offset = tile_idx == 0 ? 0 : tile_bucket_offsets[tile_idx - 1];
+        const uint n_tile_instances = tile_range.y - tile_range.x;
+        const uint n_tile_buckets = div_round_up(n_tile_instances, 32u);
+        for (uint bucket_idx = thread_rank; bucket_idx < n_tile_buckets; bucket_idx += config::block_size_blend) {
+            bucket_to_tile[bucket_offset + bucket_idx] = tile_idx;
+        }
         for (int n_points_remaining = tile_range.y - tile_range.x, current_fetch_idx = tile_range.x + thread_rank; n_points_remaining > 0; n_points_remaining -= config::block_size_blend, current_fetch_idx += config::block_size_blend) {
             if (__syncthreads_count(done) == config::block_size_blend) break;
             if (current_fetch_idx < tile_range.y) {
@@ -426,6 +455,18 @@ namespace faster_gs::rasterization::kernels::forward {
             block.sync();
             const int current_batch_size = min(config::block_size_blend, n_points_remaining);
             for (int j = 0; !done && j < current_batch_size; ++j) {
+                if ((j & 31) == 0) {
+                    const uint bucket_pixel_offset = bucket_offset * config::block_size_blend + thread_rank;
+                    const uint bucket_color_offset = bucket_offset * config::block_size_blend * 3 + thread_rank;
+                    sampled_transmittance[bucket_pixel_offset] = transmittance;
+                    sampled_accumulated_color[bucket_color_offset] = color_pixel.x;
+                    sampled_accumulated_color[config::block_size_blend + bucket_color_offset] = color_pixel.y;
+                    sampled_accumulated_color[2 * config::block_size_blend + bucket_color_offset] = color_pixel.z;
+                    bucket_offset++;
+                }
+
+                contributor++;
+
                 // evaluate current Gaussian at pixel
                 const float4 conic_opacity = collected_conic_opacity[j];
                 const float3 conic = make_float3(conic_opacity);
@@ -460,6 +501,7 @@ namespace faster_gs::rasterization::kernels::forward {
 
                 // update transmittance
                 transmittance = next_transmittance;
+                last_contributor = contributor;
 
                 // early stopping (if not config::original_stability_measures)
                 if (!config::original_stability_measures && transmittance < config::transmittance_threshold) {
@@ -474,10 +516,27 @@ namespace faster_gs::rasterization::kernels::forward {
             // store results
             const uint pixel_idx = width * pixel_coords.y + pixel_coords.x;
             const uint n_pixels = width * height;
+            tile_pixel_colors[pixel_idx] = color_pixel.x;
+            tile_pixel_colors[n_pixels + pixel_idx] = color_pixel.y;
+            tile_pixel_colors[2 * n_pixels + pixel_idx] = color_pixel.z;
             image[pixel_idx] = color_pixel.x;
             image[n_pixels + pixel_idx] = color_pixel.y;
             image[2 * n_pixels + pixel_idx] = color_pixel.z;
             tile_final_transmittances[pixel_idx] = transmittance;
+            tile_n_contrib[pixel_idx] = last_contributor;
+        }
+
+        max_contrib_scratch[thread_rank] = last_contributor;
+        block.sync();
+        for (uint stride = config::block_size_blend / 2; stride > 0; stride >>= 1) {
+            if (thread_rank < stride) {
+                const uint other = max_contrib_scratch[thread_rank + stride];
+                if (other > max_contrib_scratch[thread_rank]) max_contrib_scratch[thread_rank] = other;
+            }
+            block.sync();
+        }
+        if (thread_rank == 0) {
+            tile_max_contrib[tile_idx] = max_contrib_scratch[0];
         }
     }
 

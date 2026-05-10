@@ -1,5 +1,52 @@
 # FasterGSBasisRapid Changelog
 
+## fastergsbasisrapid-v0.9.0 - 2026-05-10
+
+Implementation/config changes:
+
+- Reworked the CUDA rasterization backend toward RapidGS semantics by adding the forward-side 32-Gaussian bucket state used by RapidGS:
+  - per-bucket transmittance before each bucket,
+  - per-bucket accumulated RGB before each bucket,
+  - per-bucket-to-tile mapping,
+  - per-pixel contributor count,
+  - per-tile maximum contributor count.
+- Added a warp-per-bucket backward kernel modeled on RapidGS `PerGaussianRenderCUDA`, so each warp owns one 32-Gaussian bucket and scans the 16x16 tile pixels.
+- Kept FasterGSBasisRapid's existing camera convention, compact tile bounds, SH layout, and densification helper semantics. In particular, the pixel-center convention remains equivalent to RapidGS for centered MipNeRF360 intrinsics: mean projection uses `center_x=center_y=width/height/2`, while rasterization samples `pixel + 0.5`.
+- Added `configs/fastergsbasisrapid_v0_9_bucket_backward/bicycle.yaml`, copied from v0.8.1 and bumped to `fastergsbasisrapid-v0.9.0`.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSBasisRapid \
+  --config-dir configs/fastergsbasisrapid_v0_9_bucket_backward \
+  --repeats 1 \
+  --suite-name fastergsbasisrapid_v0_9_bucket_backward_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | image scale | train time | training iteration time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsbasisrapid-v0.9.0 | bicycle | 0.3234937323 | 221.66s | 190.00s | 1,512,799 | 25.7260 | 0.7666 | 0.2777 | 5.64GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 131,074 -> 162,717 | 0.7301 | 0.4422 | 1.2157 | 0.2819 | 0.8802 | 3.5501 |
+| 14000-14100 | 1,723,077 -> 1,723,122 | 1.3331 | 0.4579 | 4.2080 | 0.4941 | 1.8533 | 8.3464 |
+| 25000-25100 | 1,518,689 -> 1,518,689 | 1.3238 | 0.4484 | 4.0377 | 0.0000 | 0.1451 | 5.9550 |
+
+Interpretation:
+
+- This version is the first one that changes the CUDA backend architecture, rather than only optimizing the original FasterGSBasis tile/pixel backward.
+- Quality and Gaussian count remain in the v0.8.1 range, while training time improves from `290.01s` to `221.66s`.
+- `training_iteration` time improves from `258.90s` to about `190.00s`, which is now faster than the RapidGS bicycle reference training time of `231.77s`.
+- The backward windows now match RapidGS semantics and timing closely: mid-window backward is `4.21ms` vs RapidGS `4.78ms`, and late-window backward is `4.04ms` vs RapidGS `4.57ms`.
+- LPIPS remains worse than the provided RapidGS reference (`0.2777` vs `0.2450`) even though PSNR/SSIM are comparable or better; this gap is not explained by the CUDA backward path after the bucket rewrite and likely comes from remaining training/config/evaluation differences.
+
 ## fastergsbasisrapid-v0.8.1 - 2026-05-10
 
 Implementation/config changes:

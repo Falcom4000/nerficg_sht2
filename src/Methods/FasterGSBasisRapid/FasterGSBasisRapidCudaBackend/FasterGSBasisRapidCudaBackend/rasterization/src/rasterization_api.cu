@@ -8,7 +8,7 @@
 #include <functional>
 #include <tuple>
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int>
 faster_gs::rasterization::forward_wrapper(
     const torch::Tensor& means,
     const torch::Tensor& scales,
@@ -50,14 +50,17 @@ faster_gs::rasterization::forward_wrapper(
     torch::Tensor primitive_buffers = torch::empty({0}, byte_options);
     torch::Tensor tile_buffers = torch::empty({0}, byte_options);
     torch::Tensor instance_buffers = torch::empty({0}, byte_options);
+    torch::Tensor sample_buffers = torch::empty({0}, byte_options);
     const std::function<char*(size_t)> resize_primitive_buffers = resize_function_wrapper(primitive_buffers);
     const std::function<char*(size_t)> resize_tile_buffers = resize_function_wrapper(tile_buffers);
     const std::function<char*(size_t)> resize_instance_buffers = resize_function_wrapper(instance_buffers);
+    const std::function<char*(size_t)> resize_sample_buffers = resize_function_wrapper(sample_buffers);
 
-    auto [n_instances, instance_primitive_indices_selector] = forward(
+    auto [n_instances, n_buckets, instance_primitive_indices_selector] = forward(
         resize_primitive_buffers,
         resize_tile_buffers,
         resize_instance_buffers,
+        resize_sample_buffers,
         reinterpret_cast<float3*>(means.data_ptr<float>()),
         reinterpret_cast<float3*>(scales.data_ptr<float>()),
         reinterpret_cast<float4*>(rotations.data_ptr<float>()),
@@ -87,8 +90,8 @@ faster_gs::rasterization::forward_wrapper(
     return {
         image,
         metric_counts,
-        primitive_buffers, tile_buffers, instance_buffers,
-        n_instances, instance_primitive_indices_selector
+        primitive_buffers, tile_buffers, instance_buffers, sample_buffers,
+        n_instances, n_buckets, instance_primitive_indices_selector
     };
 }
 
@@ -105,6 +108,7 @@ faster_gs::rasterization::backward_wrapper(
     const torch::Tensor& primitive_buffers,
     const torch::Tensor& tile_buffers,
     const torch::Tensor& instance_buffers,
+    const torch::Tensor& sample_buffers,
     const torch::Tensor& w2c,
     const torch::Tensor& cam_position,
     const torch::Tensor& bg_color,
@@ -118,6 +122,7 @@ faster_gs::rasterization::backward_wrapper(
     const float near_plane,
     const float far_plane,
     const int n_instances,
+    const int n_buckets,
     const int instance_primitive_indices_selector)
 {
     const int n_primitives = means.size(0);
@@ -150,6 +155,7 @@ faster_gs::rasterization::backward_wrapper(
         reinterpret_cast<char*>(primitive_buffers.data_ptr()),
         reinterpret_cast<char*>(tile_buffers.data_ptr()),
         reinterpret_cast<char*>(instance_buffers.data_ptr()),
+        reinterpret_cast<char*>(sample_buffers.data_ptr()),
         reinterpret_cast<float3*>(grad_means.data_ptr<float>()),
         reinterpret_cast<float3*>(grad_scales.data_ptr<float>()),
         reinterpret_cast<float4*>(grad_rotations.data_ptr<float>()),
@@ -163,6 +169,7 @@ faster_gs::rasterization::backward_wrapper(
         update_densification_info ? densification_info.data_ptr<float>() : nullptr,
         n_primitives,
         n_instances,
+        n_buckets,
         instance_primitive_indices_selector,
         active_sh_bases,
         total_sh_bases_rest,

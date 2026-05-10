@@ -6,10 +6,11 @@
 
 namespace faster_gs::rasterization {
 
-    std::tuple<int, int> forward(
+    std::tuple<int, int, int> forward(
         std::function<char* (size_t)> resize_primitive_buffers,
         std::function<char* (size_t)> resize_tile_buffers,
         std::function<char* (size_t)> resize_instance_buffers,
+        std::function<char* (size_t)> resize_sample_buffers,
         const float3* means,
         const float3* scales,
         const float4* rotations,

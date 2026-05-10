@@ -104,11 +104,43 @@ namespace faster_gs::rasterization {
     struct TileBuffers {
         uint2* instance_ranges;
         float* final_transmittances;
+        uint* n_contrib;
+        uint* max_contrib;
+        float* pixel_colors;
+        uint* bucket_count;
+        uint* bucket_offsets;
+        size_t bucket_count_cub_workspace_size;
+        char* bucket_count_cub_workspace;
 
-        static TileBuffers from_blob(char*& blob, int n_tiles) {
+        static TileBuffers from_blob(char*& blob, int n_tiles, int n_pixels) {
             TileBuffers buffers;
             obtain(blob, buffers.instance_ranges, n_tiles);
-            obtain(blob, buffers.final_transmittances, n_tiles * config::block_size_blend);
+            obtain(blob, buffers.final_transmittances, n_pixels);
+            obtain(blob, buffers.n_contrib, n_pixels);
+            obtain(blob, buffers.max_contrib, n_tiles);
+            obtain(blob, buffers.pixel_colors, 3 * n_pixels);
+            obtain(blob, buffers.bucket_count, n_tiles);
+            obtain(blob, buffers.bucket_offsets, n_tiles);
+            cub::DeviceScan::InclusiveSum(
+                nullptr, buffers.bucket_count_cub_workspace_size,
+                buffers.bucket_count, buffers.bucket_offsets,
+                n_tiles
+            );
+            obtain(blob, buffers.bucket_count_cub_workspace, buffers.bucket_count_cub_workspace_size);
+            return buffers;
+        }
+    };
+
+    struct SampleBuffers {
+        uint* bucket_to_tile;
+        float* transmittance;
+        float* accumulated_color;
+
+        static SampleBuffers from_blob(char*& blob, int n_buckets) {
+            SampleBuffers buffers;
+            obtain(blob, buffers.bucket_to_tile, n_buckets);
+            obtain(blob, buffers.transmittance, n_buckets * config::block_size_blend);
+            obtain(blob, buffers.accumulated_color, 3 * n_buckets * config::block_size_blend);
             return buffers;
         }
     };

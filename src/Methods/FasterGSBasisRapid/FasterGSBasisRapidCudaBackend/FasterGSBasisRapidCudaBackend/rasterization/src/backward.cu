@@ -19,6 +19,7 @@ void faster_gs::rasterization::backward(
     char* primitive_buffers_blob,
     char* tile_buffers_blob,
     char* instance_buffers_blob,
+    char* sample_buffers_blob,
     float3* grad_means,
     float3* grad_scales,
     float4* grad_rotations,
@@ -32,6 +33,7 @@ void faster_gs::rasterization::backward(
     float* densification_info,
     const int n_primitives,
     const int n_instances,
+    const int n_buckets,
     const int instance_primitive_indices_selector,
     const int active_sh_bases,
     const int total_sh_bases_rest,
@@ -43,31 +45,39 @@ void faster_gs::rasterization::backward(
     const float center_y)
 {
     const dim3 grid(div_round_up(width, config::tile_width), div_round_up(height, config::tile_height), 1);
-    const dim3 block(config::block_size_blend, 1, 1);
     const int n_tiles = grid.x * grid.y;
+    const int n_pixels = width * height;
     const int end_bit = extract_end_bit(n_tiles - 1) + 32;
 
     PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives);
-    TileBuffers tile_buffers = TileBuffers::from_blob(tile_buffers_blob, n_tiles);
+    TileBuffers tile_buffers = TileBuffers::from_blob(tile_buffers_blob, n_tiles, n_pixels);
     InstanceBuffers instance_buffers = InstanceBuffers::from_blob(instance_buffers_blob, n_instances, end_bit);
+    SampleBuffers sample_buffers = SampleBuffers::from_blob(sample_buffers_blob, n_buckets);
     instance_buffers.primitive_indices.selector = instance_primitive_indices_selector;
 
-    kernels::backward::blend_backward_cu<<<grid, block>>>(
+    kernels::backward::bucket_blend_backward_cu<<<n_buckets, 32>>>(
         tile_buffers.instance_ranges,
         instance_buffers.primitive_indices.Current(),
+        tile_buffers.bucket_offsets,
+        sample_buffers.bucket_to_tile,
+        sample_buffers.transmittance,
+        sample_buffers.accumulated_color,
         primitive_buffers.mean2d,
         primitive_buffers.conic_opacity,
         primitive_buffers.color,
         bg_color,
         grad_image,
-        image,
+        tile_buffers.pixel_colors,
         tile_buffers.final_transmittances,
+        tile_buffers.n_contrib,
+        tile_buffers.max_contrib,
         grad_mean2d_helper,
         grad_mean2d_abs_helper,
         grad_conic_helper,
         grad_opacities,
         grad_color_helper,
         n_primitives,
+        n_buckets,
         width,
         height,
         grid.x
