@@ -1,0 +1,7 @@
+from Methods.FasterGSFusedRapid.Model import FasterGSFusedRapidModel
+from Methods.FasterGSFusedRapid.Renderer import FasterGSFusedRapidRenderer
+from Methods.FasterGSFusedRapid.Trainer import FasterGSFusedRapidTrainer
+
+MODEL = FasterGSFusedRapidModel
+RENDERER = FasterGSFusedRapidRenderer
+TRAINING_INSTANCE = FasterGSFusedRapidTrainer
