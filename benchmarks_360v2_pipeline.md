@@ -30,6 +30,22 @@ Only needed after CUDA/C++ code changes or when setting up a method for the firs
 python ./scripts/install.py -m <METHOD_NAME>
 ```
 
+When using the `environments/py311_cu128.yaml` Conda environment, PyTorch is built for CUDA 12.8. Make sure the extension build also uses a CUDA 12.8 `nvcc`; otherwise PyTorch's extension builder can fail with a version mismatch such as detected CUDA 13.0 vs PyTorch CUDA 12.8.
+
+On machines where the default `nvcc` points to CUDA 13.0, run installs with:
+
+```bash
+export CUDA_HOME=/usr/local/cuda-12.8
+export PATH=/usr/local/cuda-12.8/bin:$PATH
+python ./scripts/install.py -m <METHOD_NAME>
+```
+
+Install `ninja` in the Conda environment before compiling CUDA extensions. Without it, PyTorch falls back to the slower distutils backend:
+
+```bash
+python -m pip install ninja
+```
+
 The benchmark runner can do this before benchmarking:
 
 ```bash

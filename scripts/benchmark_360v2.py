@@ -65,7 +65,12 @@ RUN_COLUMNS = [
     'vram_allocated_gb',
     'vram_reserved_gb',
     'n_gaussians',
+    'model_artifacts_deleted',
+    'model_artifacts_deleted_bytes',
+    'model_artifacts_deleted_gb',
 ]
+
+MODEL_ARTIFACT_PATTERNS = ('*.pt', '*.pth', '*.ckpt', '*.train')
 
 
 def run_command(command: list[str], *, log_path: Path | None = None, cwd: Path | None = None) -> int:
@@ -326,6 +331,50 @@ def parse_run_outputs(output_dir: Path | None, num_iterations: int) -> dict[str,
     return result
 
 
+def path_size(path: Path) -> int:
+    if path.is_file():
+        return path.stat().st_size
+    if not path.is_dir():
+        return 0
+    return sum(child.stat().st_size for child in path.rglob('*') if child.is_file())
+
+
+def cleanup_saved_model_artifacts(output_dir: Path | None) -> dict[str, Any]:
+    """Deletes saved model artifacts from an archived benchmark run directory."""
+    if output_dir is None:
+        return {}
+
+    candidates: list[Path] = []
+    checkpoints_dir = output_dir / 'checkpoints'
+    if checkpoints_dir.exists():
+        candidates.append(checkpoints_dir)
+
+    for pattern in MODEL_ARTIFACT_PATTERNS:
+        for path in output_dir.rglob(pattern):
+            if checkpoints_dir in path.parents:
+                continue
+            candidates.append(path)
+
+    deleted_count = 0
+    deleted_bytes = 0
+    for path in sorted(set(candidates), key=lambda item: len(item.parts), reverse=True):
+        if not path.exists():
+            continue
+        deleted_bytes += path_size(path)
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        deleted_count += 1
+
+    result = {
+        'model_artifacts_deleted': deleted_count,
+        'model_artifacts_deleted_bytes': deleted_bytes,
+    }
+    result['model_artifacts_deleted_gb'] = deleted_bytes / 1024 ** 3
+    return result
+
+
 def numeric_mean(records: list[dict[str, Any]], field: str) -> float | None:
     values = [record.get(field) for record in records if isinstance(record.get(field), (int, float))]
     return mean(values) if values else None
@@ -551,6 +600,7 @@ def main() -> int:
                     'wall_time_sec': wall_time_sec,
                 }
                 record.update(parse_run_outputs(final_output_dir, int(record['num_iterations'] or 0)))
+                record.update(cleanup_saved_model_artifacts(final_output_dir))
                 records.append(record)
 
                 if final_output_dir is not None:
