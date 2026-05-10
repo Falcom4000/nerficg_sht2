@@ -1,5 +1,42 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.1.1 - 2026-05-10
+
+Implementation/config changes:
+
+- Added CUDA event profiler support to `FasterGSFusedRapidTrainer`, matching the window output format used by `FasterGSBasisRapid`.
+- The profiler records render, loss, backward, densify/prune, optimizer, total, and Gaussian-count columns in `profile_windows.csv`.
+- For this fused method, the CUDA Adam/preprocess work is launched from the custom backward path, so the `optimizer_ms` column is intentionally `0.0`; optimizer work is included in `backward_ms`.
+- Added `configs/fastergsfusedrapid_v0_1_1_profile/bicycle.yaml`, copied from v0.1 and enabling the standard `1000-1100`, `14000-14100`, and `25000-25100` profiler windows.
+- No CUDA kernel, densification, loss, or optimizer semantics changed from v0.1.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_1_1_profile \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_1_1_profile_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | image scale | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsfusedrapid-v0.1.1 | bicycle | 0.3234937323 | pending | pending | pending | pending | pending | pending |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| pending | pending | pending | pending | pending | pending | pending | pending |
+
+Interpretation:
+
+- Pending benchmark. This version exists to inspect the current fused bottleneck before changing pruning or optimizer semantics.
+
 ## fastergsfusedrapid-v0.1.0 - 2026-05-10
 
 Implementation/config changes:
