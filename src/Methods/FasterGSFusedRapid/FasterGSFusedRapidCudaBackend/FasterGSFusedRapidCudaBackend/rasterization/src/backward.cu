@@ -64,9 +64,11 @@ void faster_gs::rasterization::backward(
     instance_buffers.primitive_indices.selector = instance_primitive_indices_selector;
 
     const bool update_densification_info = densification_info != nullptr;
-    auto launch_blend_backward = [&](auto update_densification_tag) {
+    const bool use_inv_depth_grad = grad_inv_depth != nullptr;
+    auto launch_blend_backward = [&](auto update_densification_tag, auto use_inv_depth_grad_tag) {
         constexpr bool update = decltype(update_densification_tag)::value;
-        kernels::backward::blend_backward_cu<update><<<n_buckets, 32>>>(
+        constexpr bool use_inv_depth = decltype(use_inv_depth_grad_tag)::value;
+        kernels::backward::blend_backward_cu<update, use_inv_depth><<<n_buckets, 32>>>(
             tile_buffers.instance_ranges,
             tile_buffers.buckets_offset,
             instance_buffers.primitive_indices.Current(),
@@ -97,8 +99,10 @@ void faster_gs::rasterization::backward(
             grid.x
         );
     };
-    if (update_densification_info) launch_blend_backward(std::true_type{});
-    else launch_blend_backward(std::false_type{});
+    if (update_densification_info && use_inv_depth_grad) launch_blend_backward(std::true_type{}, std::true_type{});
+    else if (update_densification_info) launch_blend_backward(std::true_type{}, std::false_type{});
+    else if (use_inv_depth_grad) launch_blend_backward(std::false_type{}, std::true_type{});
+    else launch_blend_backward(std::false_type{}, std::false_type{});
     CHECK_CUDA(config::debug, "blend_backward")
 
     const float bias_correction1_rcp = 1.0f / (1.0f - std::pow(config::beta1, adam_step_count));
@@ -106,9 +110,10 @@ void faster_gs::rasterization::backward(
 
     const float step_size_means = current_mean_lr * bias_correction1_rcp;
 
-    auto launch_preprocess_backward = [&](auto update_densification_tag) {
+    auto launch_preprocess_backward = [&](auto update_densification_tag, auto use_inv_depth_grad_tag) {
         constexpr bool update = decltype(update_densification_tag)::value;
-        kernels::backward::preprocess_backward_cu<update><<<div_round_up(n_primitives, config::block_size_preprocess_backward), config::block_size_preprocess_backward>>>(
+        constexpr bool use_inv_depth = decltype(use_inv_depth_grad_tag)::value;
+        kernels::backward::preprocess_backward_cu<update, use_inv_depth><<<div_round_up(n_primitives, config::block_size_preprocess_backward), config::block_size_preprocess_backward>>>(
             means,
             scales,
             rotations,
@@ -145,8 +150,10 @@ void faster_gs::rasterization::backward(
             bias_correction2_sqrt_rcp
         );
     };
-    if (update_densification_info) launch_preprocess_backward(std::true_type{});
-    else launch_preprocess_backward(std::false_type{});
+    if (update_densification_info && use_inv_depth_grad) launch_preprocess_backward(std::true_type{}, std::true_type{});
+    else if (update_densification_info) launch_preprocess_backward(std::true_type{}, std::false_type{});
+    else if (use_inv_depth_grad) launch_preprocess_backward(std::false_type{}, std::true_type{});
+    else launch_preprocess_backward(std::false_type{}, std::false_type{});
     CHECK_CUDA(config::debug, "preprocess_backward")
 
     const int n_elements_means = n_primitives * 3;

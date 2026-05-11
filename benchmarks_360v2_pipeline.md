@@ -210,6 +210,7 @@ Recent bicycle single-run comparison:
 | v0.4.8 AnySplat-only 18k | 139.10s | 25.3164 | 0.7441 | 0.2988 | 1,502,571 | all imported SH active from iteration 0 |
 | v0.4.9 AnySplat-only 18k SH schedule | 139.33s | 25.3361 | 0.7460 | 0.2966 | 1,528,062 | single-scene predecessor |
 | v0.4.10 all-scene baseline, bicycle mean | 138.55s | 25.3187 | 0.7457 | 0.2969 | 1,532,846 | current speed-focused recommendation |
+| v0.4.11 depth-off backward template, bicycle mean | 138.83s | 25.3183 | 0.7460 | 0.2971 | 1,525,063 | neutral end-to-end, kept as depth path cleanup |
 
 Current all-scene repeat-3 baseline:
 

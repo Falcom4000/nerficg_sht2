@@ -1,5 +1,38 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.11 - 2026-05-11
+
+Implementation/config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_11_inv_depth_template/*.yaml`, copied from v0.4.10 with only experiment metadata changed.
+- Templated fused CUDA `blend_backward_cu` and `preprocess_backward_cu` on `use_inv_depth_grad`.
+- When Metric3D/depth supervision is disabled, the inverse-depth gradient path is compiled out of the backward kernels.
+- When depth supervision is enabled, the original inverse-depth gradient path is still instantiated.
+
+Verification:
+
+- Build: `python ./scripts/install.py -m FasterGSFusedRapid`
+- Benchmark: `python scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_11_inv_depth_template --repeats 3 --suite-name fastergsfusedrapid_v0_4_11_inv_depth_template_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_11_inv_depth_template_r3`.
+
+| scene | v0.4.10 train | v0.4.11 train | delta | PSNR delta | SSIM delta | LPIPS delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 138.5501s | 138.8349s | +0.2848s | -0.0004 | +0.0002 | +0.0002 |
+| bonsai | 87.6096s | 87.8292s | +0.2196s | -0.0534 | -0.0006 | +0.0003 |
+| counter | 82.4686s | 82.6424s | +0.1738s | +0.0232 | -0.0001 | -0.0002 |
+| garden | 92.8292s | 93.4276s | +0.5984s | -0.0602 | +0.0003 | -0.0007 |
+| kitchen | 96.9229s | 96.4586s | -0.4642s | -0.0309 | -0.0001 | +0.0007 |
+| room | 85.2407s | 84.8136s | -0.4271s | -0.0307 | -0.0001 | +0.0003 |
+| stump | 95.3679s | 94.9300s | -0.4379s | +0.0058 | -0.0002 | +0.0001 |
+| mean | 96.9984s | 96.9909s | -0.0075s | -0.0209 | -0.0001 | +0.0001 |
+
+Profile interpretation:
+
+- The result is effectively neutral end-to-end: all-scene mean train time changed by only `-0.0075s`.
+- The `14000-14100` backward window improved in `bicycle`, `bonsai`, `counter`, `room`, and `stump`, but regressed in `garden` and `kitchen`.
+- Keep the change as a semantic cleanup of the depth-disabled backward path, not as a proven speed improvement.
+- The next higher-value target is the forward/preprocess path, which still computes and stores per-primitive inverse depth even when `render_inv_depth=false`.
+
 ## fastergsfusedrapid-v0.4.10 - 2026-05-11
 
 Implementation/config changes:
