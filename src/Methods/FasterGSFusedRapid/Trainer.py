@@ -132,7 +132,8 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
                 'start': start,
                 'end': end,
                 'render': 0.0,
-                'loss': 0.0,
+                'rgb_loss': 0.0,
+                'depth_loss': 0.0,
                 'backward': 0.0,
                 'densify_prune': 0.0,
                 'optimizer': 0.0,
@@ -185,11 +186,19 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
         weight = self._depth_weight(iteration)
         if weight <= 0.0 or getattr(view, '_depth', None) is None:
             return None
-        inv_depth_gt = view.depth[0]
-        valid = torch.isfinite(inv_depth_gt) & (inv_depth_gt > float(self.DEPTH_SUPERVISION.MIN_VALID_INV_DEPTH))
-        if not torch.any(valid):
-            return None
-        loss = torch.abs(inv_depth[valid] - inv_depth_gt[valid]).mean()
+        cache = getattr(view, '_depth_supervision_cache', None)
+        min_valid_inv_depth = float(self.DEPTH_SUPERVISION.MIN_VALID_INV_DEPTH)
+        if cache is None or cache['min_valid_inv_depth'] != min_valid_inv_depth:
+            inv_depth_gt = view.depth[0].contiguous()
+            valid_mask = (torch.isfinite(inv_depth_gt) & (inv_depth_gt > min_valid_inv_depth)).to(inv_depth_gt.dtype)
+            cache = {
+                'min_valid_inv_depth': min_valid_inv_depth,
+                'inv_depth': inv_depth_gt,
+                'valid_mask': valid_mask,
+                'normalizer': valid_mask.sum().clamp_min(1.0),
+            }
+            view._depth_supervision_cache = cache
+        loss = (torch.abs(inv_depth - cache['inv_depth']) * cache['valid_mask']).sum() / cache['normalizer']
         return loss * weight * float(self.DEPTH_SUPERVISION.LOSS_MULTIPLIER)
 
     def _infer_depth_path(self, view) -> Path | None:
@@ -268,7 +277,7 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
         """Creates the sampler."""
         self.train_sampler = DatasetSampler(dataset=dataset.train(), random=True)
 
-    @pre_training_callback(priority=45)
+    @pre_training_callback(priority=5100)
     @torch.no_grad()
     def setup_depth_priors(self, _, dataset: 'BaseDataset') -> None:
         """Attach optional Metric3D inverse-depth priors to training views."""
@@ -313,6 +322,7 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
             self.model.gaussians.initialize_from_ply(
                 anysplat_path,
                 set_active_sh_degree=bool(self.ANYSPLAT_INITIALIZATION.SET_ACTIVE_SH_DEGREE),
+                world_transform=getattr(dataset, 'world_transform', None),
             )
         elif self.ANYSPLAT_INITIALIZATION.ACTIVE and self.ANYSPLAT_INITIALIZATION.REQUIRE:
             raise Framework.TrainingError(f'AnySplat initialization PLY not found: {anysplat_path}')
@@ -419,7 +429,7 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
         """Performs a training step without actually doing the optimizer step."""
         profile_window = self._profile_window(iteration)
         if profile_window is not None:
-            profile_events = [torch.cuda.Event(enable_timing=True) for _ in range(4)]
+            profile_events = [torch.cuda.Event(enable_timing=True) for _ in range(5)]
             profile_events[0].record()
             self._record_profile_gaussian_count(profile_window)
         # init modes
@@ -449,19 +459,22 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
         if (alpha_gt := view.alpha) is not None:
             rgb_gt = apply_background_color(rgb_gt, alpha_gt, bg_color)
         loss = self.loss(image, rgb_gt) + 0.0 * autograd_dummy
+        if profile_window is not None:
+            profile_events[2].record()
         depth_loss = self._depth_loss(inv_depth, view, iteration)
         if depth_loss is not None:
             loss = loss + depth_loss
         if profile_window is not None:
-            profile_events[2].record()
+            profile_events[3].record()
         # backward
         loss.backward()
         if profile_window is not None:
-            profile_events[3].record()
+            profile_events[4].record()
             torch.cuda.synchronize()
             profile_window['render'] += profile_events[0].elapsed_time(profile_events[1])
-            profile_window['loss'] += profile_events[1].elapsed_time(profile_events[2])
-            profile_window['backward'] += profile_events[2].elapsed_time(profile_events[3])
+            profile_window['rgb_loss'] += profile_events[1].elapsed_time(profile_events[2])
+            profile_window['depth_loss'] += profile_events[2].elapsed_time(profile_events[3])
+            profile_window['backward'] += profile_events[3].elapsed_time(profile_events[4])
             profile_window['count'] += 1
             self._record_profile_gaussian_count(profile_window)
 
@@ -498,16 +511,18 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
         columns = [
             'window', 'start_iteration', 'end_iteration_exclusive', 'count',
             'n_gaussians_first', 'n_gaussians_last', 'n_gaussians_min', 'n_gaussians_max',
-            'render_ms', 'loss_ms', 'backward_ms', 'densify_prune_ms', 'optimizer_ms', 'total_ms',
+            'render_ms', 'rgb_loss_ms', 'depth_loss_ms', 'loss_ms', 'backward_ms',
+            'densify_prune_ms', 'optimizer_ms', 'total_ms',
         ]
         lines = [','.join(columns)]
         for window in self.profile_windows:
             count = window['count']
             if count > 0:
-                values = {key: window[key] / count for key in ['render', 'loss', 'backward', 'densify_prune', 'optimizer']}
-                total = sum(values.values())
+                values = {key: window[key] / count for key in ['render', 'rgb_loss', 'depth_loss', 'backward', 'densify_prune', 'optimizer']}
+                values['loss'] = values['rgb_loss'] + values['depth_loss']
+                total = values['render'] + values['loss'] + values['backward'] + values['densify_prune'] + values['optimizer']
             else:
-                values = {key: 0.0 for key in ['render', 'loss', 'backward', 'densify_prune', 'optimizer']}
+                values = {key: 0.0 for key in ['render', 'rgb_loss', 'depth_loss', 'loss', 'backward', 'densify_prune', 'optimizer']}
                 total = 0.0
 
             row = [
@@ -520,6 +535,8 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
                 str(window['n_gaussians_min'] or ''),
                 str(window['n_gaussians_max'] or ''),
                 f"{values['render']:.6f}",
+                f"{values['rgb_loss']:.6f}",
+                f"{values['depth_loss']:.6f}",
                 f"{values['loss']:.6f}",
                 f"{values['backward']:.6f}",
                 f"{values['densify_prune']:.6f}",

@@ -108,11 +108,13 @@ class CustomDataset(BaseDataset):
 
         # load point cloud
         self.point_cloud = BasicPointCloud.from_colmap(reconstruction)
+        self.world_transform = np.eye(4, dtype=np.float32)
 
         # rotate/scale poses to align ground with xz plane and optionally fit to [-1, 1]^3 cube
         if self.APPLY_PCA:
             c2ws = np.stack([view.c2w_numpy for view in data])
             c2ws, transformation = transform_poses_pca(c2ws, rescale=self.APPLY_PCA_RESCALE)
+            self.world_transform = transformation.astype(np.float32, copy=False)
             for view, c2w in zip(data, c2ws):
                 view.c2w = c2w
             self.point_cloud.transform(transformation)

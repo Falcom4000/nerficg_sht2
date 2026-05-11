@@ -1,5 +1,145 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.8 - 2026-05-11
+
+Implementation/config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_8_anysplat_only_18k/bicycle.yaml`.
+- Kept the v0.4.5 AnySplat-only semantics and reduced only `TRAINING.NUM_ITERATIONS` from `30000` to `18000`.
+- Updated `scripts/run_fastergsfusedrapid_fast_converging.py` defaults to the AnySplat-only 18k config and `--prior-mode anysplat`.
+
+Baseline context:
+
+| version | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsfusedrapid-v0.3.10 | 185.49s | 1,247,748 | 25.6526 | 0.7579 | 0.2945 | 4.64GiB |
+| fastergsfusedrapid-v0.3.11 | 184.47s | 1,246,971 | 25.6292 | 0.7580 | 0.2941 | 4.64GiB |
+| fastergsfusedrapid-v0.3.12 | 181.56s | 1,245,422 | 25.6352 | 0.7579 | 0.2951 | 4.63GiB |
+| fastergsfusedrapid-v0.3.13 | 181.95s | 1,254,289 | 25.6297 | 0.7581 | 0.2946 | 4.64GiB |
+| fastergsfusedrapid-v0.3.14 | 182.59s | 1,246,630 | 25.6324 | 0.7582 | 0.2941 | 4.63GiB |
+
+Verification:
+
+- `python scripts/run_fastergsfusedrapid_fast_converging.py --scene bicycle --skip-prior-generation --prior-mode none --config-dir configs/fastergsfusedrapid_v0_4_8_anysplat_only_18k --suite-name fastergsfusedrapid_v0_4_8_anysplat_only_18k_bicycle --repeats 1`
+- Result: train `139.1008s`, wall `197.7430s`, PSNR `25.3164`, SSIM `0.7441`, LPIPS `0.2988`, final Gaussians `1,502,571`, VRAM allocated/reserved `4.8641/5.3477 GiB`.
+- Profile windows:
+  - `1000-1100`: `render=0.9916ms`, `rgb_loss=0.4744ms`, `depth_loss=0.0032ms`, `backward=3.1665ms`, `densify/prune=0.3654ms`, total `5.0010ms`, Gaussians `826,493 -> 860,771`.
+  - `14000-14100`: `render=1.1312ms`, `rgb_loss=0.4513ms`, `depth_loss=0.0020ms`, `backward=4.8138ms`, `densify/prune=0.3885ms`, total `6.7868ms`, Gaussians `1,587,773 -> 1,587,273`.
+
+Interpretation:
+
+- v0.4.8 is the current speed-focused recommendation: it is `23.4%` faster than v0.3.14 train time while keeping bicycle quality in the normal range for a single run.
+- Quality is lower than the v0.3.10-v0.3.14 baseline in PSNR/SSIM, so v0.4.6 20k remains the more conservative speed/quality point.
+- Metric3D is not part of this recommended path because the split experiments below showed no clear quality gain and a bad interaction with AnySplat.
+
+## fastergsfusedrapid-v0.4.7 - 2026-05-11
+
+Implementation/config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_7_anysplat_only_15k/bicycle.yaml`.
+- Kept the v0.4.5 AnySplat-only semantics and reduced only `TRAINING.NUM_ITERATIONS` from `30000` to `15000`.
+
+Verification:
+
+- `python scripts/run_fastergsfusedrapid_fast_converging.py --scene bicycle --skip-prior-generation --prior-mode none --config-dir configs/fastergsfusedrapid_v0_4_7_anysplat_only_15k --suite-name fastergsfusedrapid_v0_4_7_anysplat_only_15k_bicycle --repeats 1`
+- Result: train `120.4300s`, wall `178.5623s`, PSNR `25.1440`, SSIM `0.7390`, LPIPS `0.3092`, final Gaussians `1,507,526`, VRAM allocated/reserved `4.8669/5.3477 GiB`.
+
+Interpretation:
+
+- 15k is very fast, but quality drops more than the 18k/20k configs and should not be the default recommendation.
+
+## fastergsfusedrapid-v0.4.6 - 2026-05-11
+
+Implementation/config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_6_anysplat_only_20k/bicycle.yaml`.
+- Kept the v0.4.5 AnySplat-only semantics and reduced only `TRAINING.NUM_ITERATIONS` from `30000` to `20000`.
+
+Verification:
+
+- `python scripts/run_fastergsfusedrapid_fast_converging.py --scene bicycle --skip-prior-generation --prior-mode none --config-dir configs/fastergsfusedrapid_v0_4_6_anysplat_only_20k --suite-name fastergsfusedrapid_v0_4_6_anysplat_only_20k_bicycle --repeats 1`
+- Result: train `150.4008s`, wall `209.7916s`, PSNR `25.3172`, SSIM `0.7464`, LPIPS `0.2966`, final Gaussians `1,463,917`, VRAM allocated/reserved `4.8590/5.3672 GiB`.
+- Profile windows:
+  - `1000-1100`: `render=0.9360ms`, `rgb_loss=0.4604ms`, `depth_loss=0.0018ms`, `backward=3.1376ms`, `densify/prune=0.3552ms`, total `4.8910ms`.
+  - `14000-14100`: `render=1.1151ms`, `rgb_loss=0.4508ms`, `depth_loss=0.0016ms`, `backward=4.7993ms`, `densify/prune=0.3782ms`, total `6.7450ms`.
+
+Interpretation:
+
+- 20k is the conservative AnySplat-only speed/quality point: `17.6%` faster than v0.3.14 with LPIPS close to the baseline and SSIM lower but still in a normal range.
+
+## fastergsfusedrapid-v0.4.5 - 2026-05-11
+
+Implementation/config changes:
+
+- Applied the Mip-NeRF 360 dataset `world_transform` to AnySplat Gaussian means, log-scales, and rotations before installing the PLY state into `FasterGSFusedRapid`.
+- Stored the Mip-NeRF 360 PCA/rescale transform on the dataset so external Gaussian initializers use the same training coordinate system as cameras and the COLMAP point cloud.
+- Moved Metric3D depth-prior attachment before the generic training-data preload callback, so `PRELOADING_LEVEL=2` also preloads depth priors into VRAM.
+- Cached per-view Metric3D valid masks and changed depth L1 from boolean indexing to dense masked reduction.
+- Split profiler loss timing into `rgb_loss_ms` and `depth_loss_ms`, while keeping aggregate `loss_ms`.
+- Added isolated configs:
+  - `configs/fastergsfusedrapid_v0_4_5_anysplat_only`
+  - `configs/fastergsfusedrapid_v0_4_5_depth_only`
+  - `configs/fastergsfusedrapid_v0_4_5_both_world_transform`
+- Added `--prior-mode {both,metric3d,anysplat,none}` to `scripts/run_fastergsfusedrapid_fast_converging.py`.
+
+Reason:
+
+- v0.4.4 loaded AnySplat PLY coordinates in original COLMAP space while Mip-NeRF 360 cameras and the dataset point cloud were transformed by PCA/rescale. That mismatch explains the bad bicycle quality, excessive densification, and poor GPU utilization more directly than parameter choices.
+- v0.4.4 also attached depth priors after the standard preload stage, so depth `.npy` files could be loaded during training instead of once before training.
+- AnySplat and Metric3D are now isolated in separate configs because enabling both at once made quality/performance attribution ambiguous.
+
+Verification:
+
+- `python -m py_compile src/Datasets/MipNeRF360.py src/Methods/FasterGSFusedRapid/Model.py src/Methods/FasterGSFusedRapid/Trainer.py scripts/run_fastergsfusedrapid_fast_converging.py`
+- Coordinate sanity check confirmed the transformed AnySplat PLY now matches the transformed COLMAP point-cloud coordinate frame.
+- AnySplat-only 30k: train `211.3436s`, wall `270.1355s`, PSNR `25.3423`, SSIM `0.7484`, LPIPS `0.2916`, final Gaussians `1,450,320`, VRAM allocated/reserved `4.8661/5.3672 GiB`.
+- Depth-only 30k: train `202.6496s`, wall `263.9578s`, PSNR `25.2751`, SSIM `0.7426`, LPIPS `0.3102`, final Gaussians `1,303,899`, VRAM allocated/reserved `6.8822/7.5938 GiB`.
+- AnySplat+Depth 30k: train `243.8765s`, wall `303.2136s`, PSNR `24.3770`, SSIM `0.7036`, LPIPS `0.2967`, final Gaussians `1,914,620`, VRAM allocated/reserved `7.6076/8.5898 GiB`.
+
+Interpretation:
+
+- The coordinate transform fix restored AnySplat-only quality to the normal range.
+- Metric3D depth supervision did not improve bicycle quality in this setup and increased VRAM; combined AnySplat+Depth caused a clear PSNR/SSIM regression and Gaussian-count growth.
+- The recommended path after this split is AnySplat-only plus a shorter training schedule, captured in v0.4.6-v0.4.8.
+
+## fastergsfusedrapid-v0.4.4 - 2026-05-11
+
+Implementation/config changes:
+
+- Updated `Gaussians.initialize_from_ply` to accept AnySplat PLY files with more SH coefficients than the configured `MODEL.SH_DEGREE`.
+- When the PLY contains higher-order SH terms, the loader now keeps the lowest coefficients that fit the configured FasterGSFusedRapid SH degree and logs a warning instead of failing before optimization.
+- Added `configs/fastergsfusedrapid_v0_4_4_anysplat_sh_truncation/bicycle.yaml`, copied from v0.4.3 with updated experiment metadata.
+- Updated `scripts/run_fastergsfusedrapid_fast_converging.py` defaults to v0.4.4.
+
+Reason:
+
+- The local AnySplat PLY generated from VGGT-1B contains degree-4 SH (`72` `f_rest_*` values), while the current FasterGSFusedRapid benchmark config uses `MODEL.SH_DEGREE=3` (`45` rest coefficients).
+- Truncating high-order coefficients preserves the configured renderer/training SH contract and avoids silently changing the benchmark model capacity.
+
+Expected use:
+
+```bash
+python scripts/run_fastergsfusedrapid_fast_converging.py \
+  --scene bicycle \
+  --skip-prior-generation \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_4_4_anysplat_sh_truncation_bicycle
+```
+
+Verification:
+
+- `python scripts/run_fastergsfusedrapid_fast_converging.py --scene bicycle --skip-prior-generation --repeats 1 --suite-name fastergsfusedrapid_v0_4_4_anysplat_sh_truncation_bicycle_rebuilt`
+- Result: train `422.7519s`, wall `485.3620s`, PSNR `21.6589`, SSIM `0.5126`, LPIPS `0.4228`, final Gaussians `2,206,821`, VRAM allocated/reserved `5.8429/6.5391 GiB`.
+- Profile windows:
+  - `1000-1100`: `render=0.8212ms`, `loss=4.9832ms`, `backward=3.4921ms`, `densify/prune=0.3577ms`, total `9.6542ms`, Gaussians `834,352 -> 857,490`.
+  - `14000-14100`: `render=1.3068ms`, `loss=5.8255ms`, `backward=7.2144ms`, `densify/prune=0.4539ms`, total `14.8007ms`, Gaussians `2,496,286 -> 2,499,152`.
+  - `25000-25100`: `render=1.2497ms`, `loss=4.9297ms`, `backward=6.6263ms`, total `12.8057ms`, Gaussians `2,216,418`.
+
+Interpretation:
+
+- The run completes, but quality is outside the normal bicycle range and training is much slower than v0.3.x.
+- Root causes identified for v0.4.5: AnySplat PLY coordinate-frame mismatch with Mip-NeRF 360 PCA/rescale, and Metric3D priors not being attached early enough for normal data preloading.
+
 ## fastergsfusedrapid-v0.4.3 - 2026-05-11
 
 Implementation/config/script changes:

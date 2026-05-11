@@ -17,6 +17,83 @@ from Optim.lr_utils import LRDecayPolicy
 from Optim.knn_utils import compute_root_mean_squared_knn_distances
 
 
+def rotation_matrix_to_quaternion(rotation_matrices: np.ndarray) -> np.ndarray:
+    """Converts rotation matrices to wxyz quaternions."""
+    matrices = np.asarray(rotation_matrices, dtype=np.float32)
+    if batch_dim_added := matrices.ndim == 2:
+        matrices = matrices[None]
+
+    quaternions = np.empty((matrices.shape[0], 4), dtype=np.float32)
+    trace = matrices[:, 0, 0] + matrices[:, 1, 1] + matrices[:, 2, 2]
+
+    positive_trace = trace > 0.0
+    if np.any(positive_trace):
+        s = np.sqrt(trace[positive_trace] + 1.0) * 2.0
+        quaternions[positive_trace, 0] = 0.25 * s
+        quaternions[positive_trace, 1] = (matrices[positive_trace, 2, 1] - matrices[positive_trace, 1, 2]) / s
+        quaternions[positive_trace, 2] = (matrices[positive_trace, 0, 2] - matrices[positive_trace, 2, 0]) / s
+        quaternions[positive_trace, 3] = (matrices[positive_trace, 1, 0] - matrices[positive_trace, 0, 1]) / s
+
+    remaining = ~positive_trace
+    case_x = remaining & (matrices[:, 0, 0] > matrices[:, 1, 1]) & (matrices[:, 0, 0] > matrices[:, 2, 2])
+    if np.any(case_x):
+        s = np.sqrt(1.0 + matrices[case_x, 0, 0] - matrices[case_x, 1, 1] - matrices[case_x, 2, 2]) * 2.0
+        quaternions[case_x, 0] = (matrices[case_x, 2, 1] - matrices[case_x, 1, 2]) / s
+        quaternions[case_x, 1] = 0.25 * s
+        quaternions[case_x, 2] = (matrices[case_x, 0, 1] + matrices[case_x, 1, 0]) / s
+        quaternions[case_x, 3] = (matrices[case_x, 0, 2] + matrices[case_x, 2, 0]) / s
+
+    case_y = remaining & ~case_x & (matrices[:, 1, 1] > matrices[:, 2, 2])
+    if np.any(case_y):
+        s = np.sqrt(1.0 + matrices[case_y, 1, 1] - matrices[case_y, 0, 0] - matrices[case_y, 2, 2]) * 2.0
+        quaternions[case_y, 0] = (matrices[case_y, 0, 2] - matrices[case_y, 2, 0]) / s
+        quaternions[case_y, 1] = (matrices[case_y, 0, 1] + matrices[case_y, 1, 0]) / s
+        quaternions[case_y, 2] = 0.25 * s
+        quaternions[case_y, 3] = (matrices[case_y, 1, 2] + matrices[case_y, 2, 1]) / s
+
+    case_z = remaining & ~case_x & ~case_y
+    if np.any(case_z):
+        s = np.sqrt(1.0 + matrices[case_z, 2, 2] - matrices[case_z, 0, 0] - matrices[case_z, 1, 1]) * 2.0
+        quaternions[case_z, 0] = (matrices[case_z, 1, 0] - matrices[case_z, 0, 1]) / s
+        quaternions[case_z, 1] = (matrices[case_z, 0, 2] + matrices[case_z, 2, 0]) / s
+        quaternions[case_z, 2] = (matrices[case_z, 1, 2] + matrices[case_z, 2, 1]) / s
+        quaternions[case_z, 3] = 0.25 * s
+
+    quaternions /= np.linalg.norm(quaternions, axis=1, keepdims=True).clip(min=1e-12)
+    quaternions[quaternions[:, 0] < 0.0] *= -1.0
+    return quaternions[0] if batch_dim_added else quaternions
+
+
+def apply_similarity_transform_to_gaussians(
+    means: np.ndarray,
+    scales: np.ndarray,
+    rotations: np.ndarray,
+    world_transform: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Applies a uniform-scale world transform to Gaussian means, log-scales, and rotations."""
+    transform = np.asarray(world_transform, dtype=np.float32)
+    linear = transform[:3, :3]
+    translation = transform[:3, 3]
+
+    uniform_scale = float(np.cbrt(abs(np.linalg.det(linear))))
+    if not np.isfinite(uniform_scale) or uniform_scale <= 0.0:
+        raise Framework.TrainingError(f'invalid AnySplat world transform scale: {uniform_scale}')
+
+    rotation_linear = linear / uniform_scale
+    u, _, vh = np.linalg.svd(rotation_linear)
+    rotation_linear = (u @ vh).astype(np.float32)
+    if np.linalg.det(rotation_linear) < 0.0:
+        u[:, -1] *= -1.0
+        rotation_linear = (u @ vh).astype(np.float32)
+
+    transformed_means = means @ linear.T + translation
+    transformed_scales = scales + math.log(uniform_scale)
+    rotation_matrices = quaternion_to_rotation_matrix(rotations.astype(np.float32, copy=False), normalize=True)
+    transformed_rotation_matrices = rotation_linear[None] @ rotation_matrices
+    transformed_rotations = rotation_matrix_to_quaternion(transformed_rotation_matrices)
+    return transformed_means, transformed_scales, transformed_rotations, uniform_scale
+
+
 class Gaussians(torch.nn.Module):
     """Stores a set of 3D Gaussians."""
 
@@ -159,7 +236,12 @@ class Gaussians(torch.nn.Module):
         # setup buffers
         self._set_gaussian_tensors(means, sh_coefficients_0, sh_coefficients_rest, scales, rotations, opacities)
 
-    def initialize_from_ply(self, path: Path, set_active_sh_degree: bool = True) -> None:
+    def initialize_from_ply(
+        self,
+        path: Path,
+        set_active_sh_degree: bool = True,
+        world_transform: np.ndarray | torch.Tensor | None = None,
+    ) -> None:
         """Initializes the model from a 3DGS-compatible PLY."""
         plydata = PlyData.read(str(path))
         vertices = plydata.elements[0]
@@ -174,6 +256,16 @@ class Gaussians(torch.nn.Module):
         opacities = np.asarray(vertices['opacity'])[..., None]
         scales = np.stack([np.asarray(vertices[f'scale_{idx}']) for idx in range(3)], axis=1)
         rotations = np.stack([np.asarray(vertices[f'rot_{idx}']) for idx in range(4)], axis=1)
+        transformed_scale = None
+        if world_transform is not None:
+            if isinstance(world_transform, torch.Tensor):
+                world_transform = world_transform.detach().cpu().numpy()
+            means, scales, rotations, transformed_scale = apply_similarity_transform_to_gaussians(
+                means=means,
+                scales=scales,
+                rotations=rotations,
+                world_transform=world_transform,
+            )
 
         expected_rest = 3 * ((self.max_sh_degree + 1) ** 2 - 1)
         rest_names = sorted(
@@ -181,13 +273,13 @@ class Gaussians(torch.nn.Module):
             key=lambda name: int(name.split('_')[-1]),
         )
         if len(rest_names) > expected_rest:
-            raise Framework.TrainingError(
-                f'AnySplat PLY "{path}" has {len(rest_names)} f_rest coefficients, '
-                f'but FasterGSFusedRapid SH_DEGREE={self.max_sh_degree} expects at most {expected_rest}'
+            Logger.log_warning(
+                f'AnySplat PLY "{path}" has {len(rest_names)} f_rest coefficients; '
+                f'truncating to {expected_rest} for FasterGSFusedRapid SH_DEGREE={self.max_sh_degree}'
             )
 
         sh_coefficients_rest_flat = np.zeros((means.shape[0], expected_rest), dtype=np.float32)
-        for idx, name in enumerate(rest_names):
+        for idx, name in enumerate(rest_names[:expected_rest]):
             sh_coefficients_rest_flat[:, idx] = np.asarray(vertices[name])
         sh_coefficients_rest = sh_coefficients_rest_flat.reshape((means.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1)).transpose(0, 2, 1)
 
@@ -205,6 +297,8 @@ class Gaussians(torch.nn.Module):
             f'initialized {means.shape[0]:,} Gaussians from AnySplat PLY "{path}" '
             f'with active SH degree {self.active_sh_degree}'
         )
+        if transformed_scale is not None:
+            Logger.log_info(f'applied dataset world transform to AnySplat initialization with scale {transformed_scale:.6f}')
 
     def training_setup(self, training_wrapper, training_cameras_extent: float) -> None:
         """Sets up the optimizer."""
