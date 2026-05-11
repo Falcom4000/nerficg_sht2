@@ -82,6 +82,7 @@ def resize_inverse_depth(inv_depth: torch.Tensor, scale_factor: float) -> torch.
         WEIGHT_FINAL=0.0,
         LOSS_MULTIPLIER=1.0,
         MIN_VALID_INV_DEPTH=0.0,
+        PRESCALED_TO_TRAINING_RESOLUTION=False,
     ),
     ANYSPLAT_INITIALIZATION=Framework.ConfigParameterList(
         ACTIVE=False,
@@ -283,10 +284,11 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
                 n_missing += 1
                 continue
             rgb_data = getattr(view, '_rgb', None)
+            scale_factor = None if self.DEPTH_SUPERVISION.PRESCALED_TO_TRAINING_RESOLUTION else (rgb_data.scale_factor if rgb_data is not None else None)
             view.depth = ImageData(
                 depth_path,
                 n_channels=1,
-                scale_factor=rgb_data.scale_factor if rgb_data is not None else None,
+                scale_factor=scale_factor,
                 load_fn=load_inverse_depth,
                 resize_fn=resize_inverse_depth,
             )

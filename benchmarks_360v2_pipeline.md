@@ -94,6 +94,8 @@ Useful benchmark defaults are forced by the runner:
 
 - Metric3D inverse-depth priors are written to `<SCENE>/mono_depths/<image_stem>_depth.npy`.
 - AnySplat Gaussian initialization is written to `<SCENE>/anysplat_init/point_cloud.ply`.
+- The local AnySplat encoder also needs VGGT-1B weights. The default path is `/root/codes/siggraph_asia/VGGT-1B/model.safetensors`.
+- `configs/fastergsfusedrapid_v0_4_3_scaled_metric3d_priors` generates Metric3D priors at the training image scale and stores them as float32, avoiding full-resolution float64 depth files.
 - Training consumes them through `TRAINING.DEPTH_SUPERVISION` and `TRAINING.ANYSPLAT_INITIALIZATION`.
 
 Generate priors for one scene:
@@ -103,7 +105,9 @@ python scripts/prepare_fast_converging_priors.py \
   dataset/mipnerf360/bicycle \
   --tasks metric3d anysplat \
   --metric3d-weights /path/to/metric_depth_vit_giant2_800k.pth \
-  --anysplat-weights /path/to/model.safetensors
+  --anysplat-weights /path/to/anysplat/model.safetensors \
+  --vggt-weights /path/to/VGGT-1B/model.safetensors \
+  --metric3d-image-scale 0.3234937323
 ```
 
 Then run the matching config:
@@ -111,9 +115,9 @@ Then run the matching config:
 ```bash
 python ./scripts/benchmark_360v2.py \
   -m FasterGSFusedRapid \
-  --config-dir configs/fastergsfusedrapid_v0_4_2_fast_converging \
+  --config-dir configs/fastergsfusedrapid_v0_4_3_scaled_metric3d_priors \
   --repeats 1 \
-  --suite-name fastergsfusedrapid_v0_4_2_fast_converging \
+  --suite-name fastergsfusedrapid_v0_4_3_scaled_metric3d_priors \
   --scenes bicycle
 ```
 
@@ -123,10 +127,11 @@ The one-command wrapper runs both stages serially:
 python scripts/run_fastergsfusedrapid_fast_converging.py \
   --scene bicycle \
   --metric3d-weights /path/to/metric_depth_vit_giant2_800k.pth \
-  --anysplat-weights /path/to/model.safetensors
+  --anysplat-weights /path/to/anysplat/model.safetensors \
+  --vggt-weights /path/to/VGGT-1B/model.safetensors
 ```
 
-Use `--dry-run-priors --prepare-only` to validate paths, split generation, and commands without running model inference or training.
+Use `--dry-run-priors --prepare-only` to validate paths, split generation, scaled Metric3D workspace generation, and commands without running model inference or training.
 
 The current integration assumes Mip-NeRF 360 layout and uses scene-relative defaults:
 
@@ -135,6 +140,7 @@ TRAINING:
   DEPTH_SUPERVISION:
     ACTIVE: true
     DIRECTORY: mono_depths
+    PRESCALED_TO_TRAINING_RESOLUTION: true
   ANYSPLAT_INITIALIZATION:
     ACTIVE: true
     PATH: anysplat_init/point_cloud.ply

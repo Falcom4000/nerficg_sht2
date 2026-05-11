@@ -1,5 +1,40 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.3 - 2026-05-11
+
+Implementation/config/script changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_3_scaled_metric3d_priors/bicycle.yaml`, copied from v0.4.2 with `TRAINING.DEPTH_SUPERVISION.PRESCALED_TO_TRAINING_RESOLUTION=true`.
+- `scripts/prepare_fast_converging_priors.py` can now generate the Metric3D workspace at a requested image scale through `--metric3d-image-scale`, including matching COLMAP PINHOLE intrinsics in the text model.
+- Metric3D `.npy` priors are converted to float32 after inference by default through `--metric3d-output-dtype float32`.
+- Removed the misleading `--vis False` Metric3D argument; the upstream parser treats non-empty strings as true.
+- Added explicit `--vggt-weights` plumbing for the local AnySplat encoder. The default path is `/root/codes/siggraph_asia/VGGT-1B/model.safetensors`.
+- AnySplat runs with `ANY_SPLAT_VGGT_WEIGHTS` set to that local VGGT file and `HF_HUB_OFFLINE=1`, so it does not try to download `facebook/VGGT-1B` during prior generation.
+- Added a narrow Open3D import stub for the AnySplat trajectory-alignment path; this path only uses `estimate_similarity_transform` and does not call Open3D APIs.
+- Isolated the `utils` namespace during AnySplat import so `/root/codes/siggraph_asia/utils/anysplat_utils.py` is used instead of the repo-local `scripts/utils.py`.
+- Updated `scripts/run_fastergsfusedrapid_fast_converging.py` defaults to v0.4.3 and added `--vggt-weights`.
+
+Expected use:
+
+```bash
+python scripts/run_fastergsfusedrapid_fast_converging.py \
+  --scene bicycle \
+  --metric3d-weights /root/codes/siggraph_asia/metric3D/weight/metric_depth_vit_giant2_800k.pth \
+  --anysplat-weights /root/codes/siggraph_asia/anySplat/model.safetensors \
+  --vggt-weights /root/codes/siggraph_asia/VGGT-1B/model.safetensors
+```
+
+Verification so far:
+
+- `python -m py_compile scripts/prepare_fast_converging_priors.py scripts/run_fastergsfusedrapid_fast_converging.py src/Methods/FasterGSFusedRapid/Trainer.py`
+- `python scripts/run_fastergsfusedrapid_fast_converging.py --scene bicycle --dry-run-priors --prepare-only --anysplat-weights /root/codes/siggraph_asia/anySplat/model.safetensors`
+- Metric3D bicycle prior generation completed at training resolution: 169 files, shape `1063x1600`, dtype `float32`, total `1.1G`.
+
+Pending:
+
+- AnySplat PLY generation is waiting for the local VGGT-1B file at `/root/codes/siggraph_asia/VGGT-1B/model.safetensors`.
+- Full bicycle benchmark should run after AnySplat writes `<scene>/anysplat_init/point_cloud.ply`.
+
 ## fastergsfusedrapid-v0.4.2 - 2026-05-11
 
 Implementation/config/script changes:
