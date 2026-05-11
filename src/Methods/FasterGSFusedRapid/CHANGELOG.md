@@ -1,5 +1,39 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.1 - 2026-05-11
+
+Implementation/script changes:
+
+- Added `scripts/prepare_fast_converging_priors.py` for offline Fast-Converging 3DGS prior preparation.
+- Scoped the script to Mip-NeRF 360 scenes for now.
+- The script prepares a shared COLMAP text-model workspace and writes the same Mip-NeRF 360 train/test split used by the Metric3D and AnySplat helpers.
+- Exposed Metric3D model inputs through `--metric3d-config` and `--metric3d-weights`; defaults point at `/root/codes/siggraph_asia/metric3D/mono/configs/HourglassDecoder/vit.raft5.giant2.py` and `/root/codes/siggraph_asia/metric3D/weight/metric_depth_vit_giant2_800k.pth`.
+- Exposed AnySplat model inputs through `--anysplat-config` and `--anysplat-weights`; defaults point at `/root/codes/siggraph_asia/anySplat/ckpt/config.json` and `/root/codes/siggraph_asia/anySplat/ckpt/model.safetensors`.
+- Removed VGGT-specific configuration from this pipeline; the local AnySplat wrapper is treated as the feed-forward Gaussian source.
+- Metric3D outputs are expected at `<scene>/mono_depths/<image_stem>_depth.npy`.
+- AnySplat outputs are expected at `<scene>/anysplat_init/point_cloud.ply`.
+
+Expected use:
+
+```bash
+python scripts/prepare_fast_converging_priors.py \
+  dataset/mipnerf360/bicycle \
+  --tasks metric3d anysplat \
+  --metric3d-weights /path/to/metric_depth_vit_giant2_800k.pth \
+  --anysplat-weights /path/to/model.safetensors
+```
+
+Verification:
+
+- `python -m py_compile scripts/prepare_fast_converging_priors.py`
+- `python scripts/prepare_fast_converging_priors.py dataset/mipnerf360/bicycle --dry-run --tasks metric3d anysplat`
+
+Interpretation:
+
+- This is an offline preparation step, not part of timed training.
+- The dry-run validates workspace generation and command wiring, but full inference still requires the Metric3D and AnySplat checkpoint files to exist at the configured paths.
+- FasterGSFusedRapid v0.4.0 already consumes Metric3D inverse-depth priors. Loading the AnySplat Gaussian initialization into the trainer remains a follow-up integration step.
+
 ## fastergsfusedrapid-v0.4.0 - 2026-05-11
 
 Implementation/config changes:
