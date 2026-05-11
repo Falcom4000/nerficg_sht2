@@ -1,9 +1,11 @@
 """FasterGSFusedRapid/Model.py"""
 
 import math
+from pathlib import Path
 
 import torch
 import numpy as np
+from plyfile import PlyData
 
 import Framework
 from CudaUtils.MortonEncoding import morton_encode
@@ -111,6 +113,29 @@ class Gaussians(torch.nn.Module):
             self.active_sh_degree += 1
             self.active_sh_bases = (self.active_sh_degree + 1) ** 2
 
+    def _set_gaussian_tensors(
+        self,
+        means: torch.Tensor,
+        sh_coefficients_0: torch.Tensor,
+        sh_coefficients_rest: torch.Tensor,
+        scales: torch.Tensor,
+        rotations: torch.Tensor,
+        opacities: torch.Tensor,
+    ) -> None:
+        """Installs Gaussian tensors and initializes fused Adam moments."""
+        self._means = means.contiguous()
+        self._sh_coefficients_0 = sh_coefficients_0.contiguous()
+        self._sh_coefficients_rest = sh_coefficients_rest.contiguous()
+        self._scales = scales.contiguous()
+        self._rotations = rotations.contiguous()
+        self._opacities = opacities.contiguous()
+        self.moments_means = torch.zeros(*self.means.shape, 2, dtype=torch.float32, device='cuda')
+        self.moments_sh_coefficients_0 = torch.zeros(*self._sh_coefficients_0.shape, 2, dtype=torch.float32, device='cuda')
+        self.moments_sh_coefficients_rest = torch.zeros(*self._sh_coefficients_rest.shape, 2, dtype=torch.float32, device='cuda')
+        self.moments_scales = torch.zeros(*self._scales.shape, 2, dtype=torch.float32, device='cuda')
+        self.moments_rotations = torch.zeros(*self._rotations.shape, 2, dtype=torch.float32, device='cuda')
+        self.moments_opacities = torch.zeros(*self._opacities.shape, 2, dtype=torch.float32, device='cuda')
+
     def initialize_from_point_cloud(self, point_cloud: BasicPointCloud) -> None:
         """Initializes the model from a point cloud."""
         # initial means
@@ -132,19 +157,54 @@ class Gaussians(torch.nn.Module):
         initial_opacity_logit = math.log(initial_opacity / (1.0 - initial_opacity))
         opacities = torch.full((n_initial_gaussians, 1), fill_value=initial_opacity_logit, dtype=torch.float32, device='cuda')
         # setup buffers
-        self._means = means.contiguous()
-        self._sh_coefficients_0 = sh_coefficients_0.contiguous()
-        self._sh_coefficients_rest = sh_coefficients_rest.contiguous()
-        self._scales = scales.contiguous()
-        self._rotations = rotations.contiguous()
-        self._opacities = opacities.contiguous()
-        # setup adam moments
-        self.moments_means = torch.zeros(*self.means.shape, 2, dtype=torch.float32, device='cuda')
-        self.moments_sh_coefficients_0 = torch.zeros(*self._sh_coefficients_0.shape, 2, dtype=torch.float32, device='cuda')
-        self.moments_sh_coefficients_rest = torch.zeros(*self._sh_coefficients_rest.shape, 2, dtype=torch.float32, device='cuda')
-        self.moments_scales = torch.zeros(*self._scales.shape, 2, dtype=torch.float32, device='cuda')
-        self.moments_rotations = torch.zeros(*self._rotations.shape, 2, dtype=torch.float32, device='cuda')
-        self.moments_opacities = torch.zeros(*self._opacities.shape, 2, dtype=torch.float32, device='cuda')
+        self._set_gaussian_tensors(means, sh_coefficients_0, sh_coefficients_rest, scales, rotations, opacities)
+
+    def initialize_from_ply(self, path: Path, set_active_sh_degree: bool = True) -> None:
+        """Initializes the model from a 3DGS-compatible PLY."""
+        plydata = PlyData.read(str(path))
+        vertices = plydata.elements[0]
+        property_names = {property_.name for property_ in vertices.properties}
+        required_properties = {'x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3'}
+        missing_properties = sorted(required_properties - property_names)
+        if missing_properties:
+            raise Framework.TrainingError(f'AnySplat PLY "{path}" is missing required properties: {missing_properties}')
+
+        means = np.stack([np.asarray(vertices[name]) for name in ('x', 'y', 'z')], axis=1)
+        sh_coefficients_0 = np.stack([np.asarray(vertices[f'f_dc_{idx}']) for idx in range(3)], axis=1)[:, None, :]
+        opacities = np.asarray(vertices['opacity'])[..., None]
+        scales = np.stack([np.asarray(vertices[f'scale_{idx}']) for idx in range(3)], axis=1)
+        rotations = np.stack([np.asarray(vertices[f'rot_{idx}']) for idx in range(4)], axis=1)
+
+        expected_rest = 3 * ((self.max_sh_degree + 1) ** 2 - 1)
+        rest_names = sorted(
+            (name for name in property_names if name.startswith('f_rest_')),
+            key=lambda name: int(name.split('_')[-1]),
+        )
+        if len(rest_names) > expected_rest:
+            raise Framework.TrainingError(
+                f'AnySplat PLY "{path}" has {len(rest_names)} f_rest coefficients, '
+                f'but FasterGSFusedRapid SH_DEGREE={self.max_sh_degree} expects at most {expected_rest}'
+            )
+
+        sh_coefficients_rest_flat = np.zeros((means.shape[0], expected_rest), dtype=np.float32)
+        for idx, name in enumerate(rest_names):
+            sh_coefficients_rest_flat[:, idx] = np.asarray(vertices[name])
+        sh_coefficients_rest = sh_coefficients_rest_flat.reshape((means.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1)).transpose(0, 2, 1)
+
+        self._set_gaussian_tensors(
+            torch.tensor(means, dtype=torch.float32, device='cuda'),
+            torch.tensor(sh_coefficients_0, dtype=torch.float32, device='cuda'),
+            torch.tensor(sh_coefficients_rest, dtype=torch.float32, device='cuda'),
+            torch.tensor(scales, dtype=torch.float32, device='cuda'),
+            torch.tensor(rotations, dtype=torch.float32, device='cuda'),
+            torch.tensor(opacities, dtype=torch.float32, device='cuda'),
+        )
+        self.active_sh_degree = self.max_sh_degree if set_active_sh_degree and rest_names else 0
+        self.active_sh_bases = (self.active_sh_degree + 1) ** 2
+        Logger.log_info(
+            f'initialized {means.shape[0]:,} Gaussians from AnySplat PLY "{path}" '
+            f'with active SH degree {self.active_sh_degree}'
+        )
 
     def training_setup(self, training_wrapper, training_cameras_extent: float) -> None:
         """Sets up the optimizer."""

@@ -83,6 +83,12 @@ def resize_inverse_depth(inv_depth: torch.Tensor, scale_factor: float) -> torch.
         LOSS_MULTIPLIER=1.0,
         MIN_VALID_INV_DEPTH=0.0,
     ),
+    ANYSPLAT_INITIALIZATION=Framework.ConfigParameterList(
+        ACTIVE=False,
+        PATH='anysplat_init/point_cloud.ply',
+        REQUIRE=False,
+        SET_ACTIVE_SH_DEGREE=True,
+    ),
     OPTIMIZER=Framework.ConfigParameterList(
         LEARNING_RATE_MEANS_INIT=0.00016,
         LEARNING_RATE_MEANS_FINAL=0.0000016,
@@ -195,6 +201,13 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
             directory = rgb_path.parent.parent / directory
         return directory / f'{rgb_path.stem}_depth.npy'
 
+    @staticmethod
+    def _resolve_scene_path(dataset: 'BaseDataset', path: str | Path) -> Path:
+        path = Path(path)
+        if path.is_absolute():
+            return path
+        return dataset.dataset_path / path
+
     def _sample_score_views(self, dataset: 'BaseDataset') -> list:
         dataset.train()
         views = list(dataset)
@@ -293,6 +306,23 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
         radius = (1.1 * torch.max(torch.linalg.norm(camera_centers - torch.mean(camera_centers, dim=0), dim=1))).item()
         Logger.log_info(f'training cameras extent: {radius:.2f}')
 
+        anysplat_path = self._resolve_scene_path(dataset, self.ANYSPLAT_INITIALIZATION.PATH)
+        if self.ANYSPLAT_INITIALIZATION.ACTIVE and anysplat_path.is_file():
+            self.model.gaussians.initialize_from_ply(
+                anysplat_path,
+                set_active_sh_degree=bool(self.ANYSPLAT_INITIALIZATION.SET_ACTIVE_SH_DEGREE),
+            )
+        elif self.ANYSPLAT_INITIALIZATION.ACTIVE and self.ANYSPLAT_INITIALIZATION.REQUIRE:
+            raise Framework.TrainingError(f'AnySplat initialization PLY not found: {anysplat_path}')
+        else:
+            if self.ANYSPLAT_INITIALIZATION.ACTIVE:
+                Logger.log_warning(f'AnySplat initialization PLY not found at "{anysplat_path}"; falling back to standard initialization')
+            self._setup_standard_gaussians(dataset)
+
+        self.model.gaussians.training_setup(self, radius)
+        self.model.gaussians.reset_densification_info()
+
+    def _setup_standard_gaussians(self, dataset: 'BaseDataset') -> None:
         if dataset.point_cloud is not None and not self.RANDOM_INITIALIZATION.FORCE:
             point_cloud = dataset.point_cloud
         else:
@@ -302,8 +332,6 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
                 positions = carve(positions, dataset, self.RANDOM_INITIALIZATION.CARVING_IN_ALL_FRUSTUMS, self.RANDOM_INITIALIZATION.CARVING_ENFORCE_ALPHA)
             point_cloud = BasicPointCloud(positions)
         self.model.gaussians.initialize_from_point_cloud(point_cloud)
-        self.model.gaussians.training_setup(self, radius)
-        self.model.gaussians.reset_densification_info()
 
     @training_callback(priority=110, start_iteration=1000, iteration_stride=1000)
     @torch.no_grad()

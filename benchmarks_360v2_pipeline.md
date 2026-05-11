@@ -88,7 +88,62 @@ Useful benchmark defaults are forced by the runner:
 - `TRAINING.BACKUP.RENDER_TESTSET=true`
 - `TRAINING.BACKUP.INTERMEDIATE_RENDERINGS=false`
 
-## 4. Run Full 360_v2 Benchmark
+## 4. Prepare FasterGSFusedRapid Fast-Converging Priors
+
+`FasterGSFusedRapid` can use the Fast-Converging 3DGS style offline priors for Mip-NeRF 360 scenes:
+
+- Metric3D inverse-depth priors are written to `<SCENE>/mono_depths/<image_stem>_depth.npy`.
+- AnySplat Gaussian initialization is written to `<SCENE>/anysplat_init/point_cloud.ply`.
+- Training consumes them through `TRAINING.DEPTH_SUPERVISION` and `TRAINING.ANYSPLAT_INITIALIZATION`.
+
+Generate priors for one scene:
+
+```bash
+python scripts/prepare_fast_converging_priors.py \
+  dataset/mipnerf360/bicycle \
+  --tasks metric3d anysplat \
+  --metric3d-weights /path/to/metric_depth_vit_giant2_800k.pth \
+  --anysplat-weights /path/to/model.safetensors
+```
+
+Then run the matching config:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_4_2_fast_converging \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_4_2_fast_converging \
+  --scenes bicycle
+```
+
+The one-command wrapper runs both stages serially:
+
+```bash
+python scripts/run_fastergsfusedrapid_fast_converging.py \
+  --scene bicycle \
+  --metric3d-weights /path/to/metric_depth_vit_giant2_800k.pth \
+  --anysplat-weights /path/to/model.safetensors
+```
+
+Use `--dry-run-priors --prepare-only` to validate paths, split generation, and commands without running model inference or training.
+
+The current integration assumes Mip-NeRF 360 layout and uses scene-relative defaults:
+
+```yaml
+TRAINING:
+  DEPTH_SUPERVISION:
+    ACTIVE: true
+    DIRECTORY: mono_depths
+  ANYSPLAT_INITIALIZATION:
+    ACTIVE: true
+    PATH: anysplat_init/point_cloud.ply
+    REQUIRE: true
+```
+
+If `ANYSPLAT_INITIALIZATION.REQUIRE` is true and the PLY is missing, training fails before optimization instead of silently falling back to COLMAP initialization.
+
+## 5. Run Full 360_v2 Benchmark
 
 The dataset root is fixed to `dataset/mipnerf360` by default. The runner discovers all scene directories there and runs them serially.
 
@@ -133,7 +188,7 @@ python ./scripts/benchmark_360v2.py \
 
 This still runs all scenes, but for fewer iterations.
 
-## 5. Output Layout
+## 6. Output Layout
 
 Each benchmark suite is written under:
 
@@ -171,7 +226,7 @@ Per-run records include:
 - peak allocated and reserved VRAM
 - output directory and log path
 
-## 6. Single-Scene Manual Run
+## 7. Single-Scene Manual Run
 
 For debugging a generated config:
 

@@ -1,5 +1,38 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.2 - 2026-05-11
+
+Implementation/config/script changes:
+
+- Integrated AnySplat Gaussian initialization into the `FasterGSFusedRapid` training setup.
+- Added 3DGS-compatible PLY loading to `Gaussians.initialize_from_ply`, preserving means, DC/rest SH coefficients, raw opacity logits, raw log scales, and rotations from AnySplat output.
+- Added `TRAINING.ANYSPLAT_INITIALIZATION` config fields: `ACTIVE`, `PATH`, `REQUIRE`, and `SET_ACTIVE_SH_DEGREE`.
+- Training now resolves relative AnySplat PLY paths against the dataset scene root.
+- When `ANYSPLAT_INITIALIZATION.REQUIRE` is true, missing AnySplat PLY files fail before optimization instead of silently falling back to COLMAP/random initialization.
+- Added `configs/fastergsfusedrapid_v0_4_2_fast_converging/bicycle.yaml` with Metric3D depth supervision and AnySplat initialization enabled.
+- Added `scripts/run_fastergsfusedrapid_fast_converging.py` to run the offline prior stage and the matching benchmark stage serially.
+- Updated `benchmarks_360v2_pipeline.md` with the full offline-to-training workflow.
+
+Expected use:
+
+```bash
+python scripts/run_fastergsfusedrapid_fast_converging.py \
+  --scene bicycle \
+  --metric3d-weights /path/to/metric_depth_vit_giant2_800k.pth \
+  --anysplat-weights /path/to/model.safetensors
+```
+
+Verification:
+
+- `python -m py_compile src/Methods/FasterGSFusedRapid/Model.py src/Methods/FasterGSFusedRapid/Trainer.py scripts/prepare_fast_converging_priors.py scripts/run_fastergsfusedrapid_fast_converging.py`
+- `python scripts/run_fastergsfusedrapid_fast_converging.py --scene bicycle --dry-run-priors --prepare-only`
+
+Interpretation:
+
+- Metric3D is now integrated through offline `.npy` prior generation plus training-time inverse-depth supervision.
+- AnySplat is now integrated through offline PLY generation plus training-time Gaussian state initialization.
+- Full inference still requires valid local Metric3D and AnySplat checkpoint files at the configured paths.
+
 ## fastergsfusedrapid-v0.4.1 - 2026-05-11
 
 Implementation/script changes:
