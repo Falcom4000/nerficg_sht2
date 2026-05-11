@@ -1,5 +1,45 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.3.13 - 2026-05-11
+
+Implementation/config changes:
+
+- Removed repeated C++ `.contiguous()` calls for `w2c`, camera position, and background color in fused forward, no-grad forward image, and backward wrappers.
+- Added debug-mode input checks for those camera/background tensors before taking direct data pointers.
+- Relies on v0.3.12 renderer-side cached pose tensors and existing contiguous background tensors; rasterization math and training parameters are unchanged.
+- Added `configs/fastergsfusedrapid_v0_3_13_direct_camera_pointers/bicycle.yaml`, copied from v0.3.12 with only experiment metadata changed.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_3_13_direct_camera_pointers \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_3_13_direct_camera_pointers_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsfusedrapid-v0.3.13 | bicycle | 181.95s | 1,254,289 | 25.6297 | 0.7581 | 0.2946 | 4.64GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 113,712 -> 138,425 | 0.6893 | 0.4618 | 1.2357 | 0.2825 | 0.0000 | 2.6693 |
+| 14000-14100 | 1,365,590 -> 1,365,545 | 0.9973 | 0.4525 | 4.1485 | 0.3610 | 0.0000 | 5.9593 |
+| 25000-25100 | 1,258,071 -> 1,258,071 | 1.0185 | 0.4512 | 3.8596 | 0.0000 | 0.0000 | 5.3293 |
+
+Interpretation:
+
+- The direct pointer change is semantically neutral under the v0.3.12 renderer contract: camera pose tensors are cached contiguous CUDA tensors, and background tensors are already contiguous CUDA float tensors.
+- Single-run train time was slightly slower than v0.3.12 (`181.56s -> 181.95s`), but the delta is small and quality/Gaussian count remain normal.
+- Keep this as a wrapper cleanup; future comparisons should treat its observed timing difference as noise unless repeated runs show a consistent trend.
+
 ## fastergsfusedrapid-v0.3.12 - 2026-05-11
 
 Implementation/config changes:

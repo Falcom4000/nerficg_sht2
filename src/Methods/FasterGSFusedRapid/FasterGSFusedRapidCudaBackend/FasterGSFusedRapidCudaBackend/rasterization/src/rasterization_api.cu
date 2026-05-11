@@ -39,6 +39,9 @@ faster_gs::rasterization::forward_wrapper(
     CHECK_INPUT(config::debug, opacities, "opacities");
     CHECK_INPUT(config::debug, sh_coefficients_0, "sh_coefficients_0");
     CHECK_INPUT(config::debug, sh_coefficients_rest, "sh_coefficients_rest");
+    CHECK_INPUT(config::debug, w2c, "w2c");
+    CHECK_INPUT(config::debug, cam_position, "cam_position");
+    CHECK_INPUT(config::debug, bg_color, "bg_color");
 
     const int n_primitives = means.size(0);
     const int total_sh_bases = sh_coefficients_rest.size(1);
@@ -71,9 +74,9 @@ faster_gs::rasterization::forward_wrapper(
         reinterpret_cast<float3*>(sh_coefficients_0.data_ptr<float>()),
         reinterpret_cast<float3*>(sh_coefficients_rest.data_ptr<float>()),
         collect_metric_counts ? metric_map_contiguous.data_ptr<bool>() : nullptr,
-        reinterpret_cast<float4*>(w2c.contiguous().data_ptr<float>()),
-        reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
-        reinterpret_cast<float3*>(bg_color.contiguous().data_ptr<float>()),
+        reinterpret_cast<float4*>(w2c.data_ptr<float>()),
+        reinterpret_cast<float3*>(cam_position.data_ptr<float>()),
+        reinterpret_cast<float3*>(bg_color.data_ptr<float>()),
         image.data_ptr<float>(),
         collect_metric_counts ? metric_counts.data_ptr<float>() : nullptr,
         n_primitives,
@@ -128,6 +131,9 @@ faster_gs::rasterization::forward_image_wrapper(
     CHECK_INPUT(config::debug, opacities, "opacities");
     CHECK_INPUT(config::debug, sh_coefficients_0, "sh_coefficients_0");
     CHECK_INPUT(config::debug, sh_coefficients_rest, "sh_coefficients_rest");
+    CHECK_INPUT(config::debug, w2c, "w2c");
+    CHECK_INPUT(config::debug, cam_position, "cam_position");
+    CHECK_INPUT(config::debug, bg_color, "bg_color");
 
     const int n_primitives = means.size(0);
     const int total_sh_bases = sh_coefficients_rest.size(1);
@@ -157,9 +163,9 @@ faster_gs::rasterization::forward_image_wrapper(
         reinterpret_cast<float3*>(sh_coefficients_0.data_ptr<float>()),
         reinterpret_cast<float3*>(sh_coefficients_rest.data_ptr<float>()),
         collect_metric_counts ? metric_map_contiguous.data_ptr<bool>() : nullptr,
-        reinterpret_cast<float4*>(w2c.contiguous().data_ptr<float>()),
-        reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
-        reinterpret_cast<float3*>(bg_color.contiguous().data_ptr<float>()),
+        reinterpret_cast<float4*>(w2c.data_ptr<float>()),
+        reinterpret_cast<float3*>(cam_position.data_ptr<float>()),
+        reinterpret_cast<float3*>(bg_color.data_ptr<float>()),
         image.data_ptr<float>(),
         collect_metric_counts ? metric_counts.data_ptr<float>() : nullptr,
         n_primitives,
@@ -216,6 +222,10 @@ void faster_gs::rasterization::backward_wrapper(
     const int n_buckets,
     const int instance_primitive_indices_selector)
 {
+    CHECK_INPUT(config::debug, w2c, "w2c");
+    CHECK_INPUT(config::debug, cam_position, "cam_position");
+    CHECK_INPUT(config::debug, bg_color, "bg_color");
+
     const int n_primitives = means.size(0);
     const int total_sh_bases = sh_coefficients_rest.size(1);
     const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
@@ -242,9 +252,9 @@ void faster_gs::rasterization::backward_wrapper(
         reinterpret_cast<float2*>(moments_opacities.data_ptr<float>()),
         reinterpret_cast<float2*>(moments_sh_coefficients_0.data_ptr<float>()),
         reinterpret_cast<float2*>(moments_sh_coefficients_rest.data_ptr<float>()),
-        reinterpret_cast<float4*>(w2c.contiguous().data_ptr<float>()),
-        reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
-        reinterpret_cast<float3*>(bg_color.contiguous().data_ptr<float>()),
+        reinterpret_cast<float4*>(w2c.data_ptr<float>()),
+        reinterpret_cast<float3*>(cam_position.data_ptr<float>()),
+        reinterpret_cast<float3*>(bg_color.data_ptr<float>()),
         reinterpret_cast<char*>(primitive_buffers.data_ptr()),
         reinterpret_cast<char*>(tile_buffers.data_ptr()),
         reinterpret_cast<char*>(instance_buffers.data_ptr()),
