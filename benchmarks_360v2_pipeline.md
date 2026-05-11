@@ -95,7 +95,8 @@ Useful benchmark defaults are forced by the runner:
 - Metric3D inverse-depth priors are written to `<SCENE>/mono_depths/<image_stem>_depth.npy`.
 - AnySplat Gaussian initialization is written to `<SCENE>/anysplat_init/point_cloud.ply`.
 - The local AnySplat encoder also needs VGGT-1B weights. The default path is `/root/codes/siggraph_asia/VGGT-1B/model.safetensors`.
-- `configs/fastergsfusedrapid_v0_4_10_all_scenes_baseline` is the current all-scene baseline and speed-focused recommendation: AnySplat initialization only, Mip-NeRF 360 PCA/rescale applied to Gaussian means/scales/rotations, Metric3D depth supervision disabled, `18000` training iterations, and normal gradual SH-degree activation.
+- `configs/fastergsfusedrapid_v0_4_12_forward_depth_template` is the current all-scene code-level baseline and speed-focused recommendation: AnySplat initialization only, Mip-NeRF 360 PCA/rescale applied to Gaussian means/scales/rotations, Metric3D depth supervision disabled, `18000` training iterations, normal gradual SH-degree activation, and depth-disabled CUDA forward/backward paths compiled without inverse-depth work.
+- `configs/fastergsfusedrapid_v0_4_10_all_scenes_baseline` is the predecessor all-scene baseline before the depth-disabled CUDA template cleanups.
 - `configs/fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule` is the single-scene predecessor of v0.4.10 for bicycle.
 - `configs/fastergsfusedrapid_v0_4_8_anysplat_only_18k` is the same 18k schedule with all imported SH coefficients active from iteration 0.
 - `configs/fastergsfusedrapid_v0_4_6_anysplat_only_20k` is the more conservative speed/quality point.
@@ -120,9 +121,9 @@ Then run the matching config:
 ```bash
 python ./scripts/benchmark_360v2.py \
   -m FasterGSFusedRapid \
-  --config-dir configs/fastergsfusedrapid_v0_4_10_all_scenes_baseline \
+  --config-dir configs/fastergsfusedrapid_v0_4_12_forward_depth_template \
   --repeats 1 \
-  --suite-name fastergsfusedrapid_v0_4_10_all_scenes_baseline_bicycle \
+  --suite-name fastergsfusedrapid_v0_4_12_forward_depth_template_bicycle \
   --scenes bicycle
 ```
 
@@ -144,9 +145,9 @@ Current split benchmark commands:
 ```bash
 python ./scripts/benchmark_360v2.py \
   -m FasterGSFusedRapid \
-  --config-dir configs/fastergsfusedrapid_v0_4_10_all_scenes_baseline \
+  --config-dir configs/fastergsfusedrapid_v0_4_12_forward_depth_template \
   --repeats 3 \
-  --suite-name fastergsfusedrapid_v0_4_10_all_scenes_baseline_r3
+  --suite-name fastergsfusedrapid_v0_4_12_forward_depth_template_r3
 
 python scripts/run_fastergsfusedrapid_fast_converging.py \
   --scene bicycle \
@@ -209,20 +210,22 @@ Recent bicycle single-run comparison:
 | v0.4.7 AnySplat-only 15k | 120.43s | 25.1440 | 0.7390 | 0.3092 | 1,507,526 | faster but quality drops |
 | v0.4.8 AnySplat-only 18k | 139.10s | 25.3164 | 0.7441 | 0.2988 | 1,502,571 | all imported SH active from iteration 0 |
 | v0.4.9 AnySplat-only 18k SH schedule | 139.33s | 25.3361 | 0.7460 | 0.2966 | 1,528,062 | single-scene predecessor |
-| v0.4.10 all-scene baseline, bicycle mean | 138.55s | 25.3187 | 0.7457 | 0.2969 | 1,532,846 | current speed-focused recommendation |
+| v0.4.10 all-scene baseline, bicycle mean | 138.55s | 25.3187 | 0.7457 | 0.2969 | 1,532,846 | all-scene predecessor |
 | v0.4.11 depth-off backward template, bicycle mean | 138.83s | 25.3183 | 0.7460 | 0.2971 | 1,525,063 | neutral end-to-end, kept as depth path cleanup |
+| v0.4.12 depth-off forward template, bicycle mean | 139.24s | 25.3324 | 0.7456 | 0.2969 | 1,534,271 | current code-level baseline; all-scene mean slightly faster |
 
-Current all-scene repeat-3 baseline:
+Current all-scene repeat-3 baseline, `configs/fastergsfusedrapid_v0_4_12_forward_depth_template`:
 
 | scene | train time mean | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| bicycle | 138.55s | 25.3187 | 0.7457 | 0.2969 | 1,532,846 | 4.8952GiB |
-| bonsai | 87.61s | 31.4221 | 0.9363 | 0.2575 | 422,112 | 5.8015GiB |
-| counter | 82.47s | 28.4717 | 0.8947 | 0.2837 | 280,897 | 5.1175GiB |
-| garden | 92.83s | 26.8531 | 0.8353 | 0.1894 | 882,466 | 2.9965GiB |
-| kitchen | 96.92s | 30.9089 | 0.9192 | 0.1742 | 411,888 | 5.6806GiB |
-| room | 85.24s | 31.2798 | 0.9126 | 0.3049 | 373,885 | 6.1339GiB |
-| stump | 95.37s | 25.8333 | 0.7286 | 0.3017 | 1,212,369 | 2.5786GiB |
+| bicycle | 139.24s | 25.3324 | 0.7456 | 0.2969 | 1,534,271 | 4.8974GiB |
+| bonsai | 87.63s | 31.3952 | 0.9361 | 0.2574 | 424,153 | 5.8015GiB |
+| counter | 82.64s | 28.4569 | 0.8950 | 0.2834 | 280,981 | 5.1178GiB |
+| garden | 92.94s | 26.7918 | 0.8352 | 0.1893 | 883,862 | 2.9975GiB |
+| kitchen | 96.01s | 30.8333 | 0.9190 | 0.1745 | 411,713 | 5.6806GiB |
+| room | 85.29s | 31.3614 | 0.9128 | 0.3047 | 374,206 | 6.1339GiB |
+| stump | 94.86s | 25.8460 | 0.7284 | 0.3017 | 1,206,409 | 2.5740GiB |
+| mean | 96.94s | 28.5738 | 0.8532 | 0.2583 | 730,799 | 4.7432GiB |
 
 The current integration assumes Mip-NeRF 360 layout and uses scene-relative defaults:
 

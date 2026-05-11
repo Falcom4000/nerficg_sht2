@@ -6,6 +6,7 @@
 #include "helper_math.h"
 #include <cub/cub.cuh>
 #include <functional>
+#include <type_traits>
 
 // sorting is done separately for depth and tile as proposed in https://github.com/m-schuetz/Splatshop
 std::tuple<int, int, int> faster_gs::rasterization::forward(
@@ -63,39 +64,44 @@ std::tuple<int, int, int> faster_gs::rasterization::forward(
     cudaMemset(primitive_buffers.n_visible_primitives, 0, sizeof(uint));
     cudaMemset(primitive_buffers.n_instances, 0, sizeof(uint));
 
-    kernels::forward::preprocess_cu<<<div_round_up(n_primitives, config::block_size_preprocess), config::block_size_preprocess>>>(
-        means,
-        scales,
-        rotations,
-        opacities,
-        sh_coefficients_0,
-        sh_coefficients_rest,
-        w2c,
-        cam_position,
-        primitive_buffers.depth_keys.Current(),
-        primitive_buffers.primitive_indices.Current(),
-        primitive_buffers.n_touched_tiles,
-        primitive_buffers.screen_bounds,
-        primitive_buffers.mean2d,
-        primitive_buffers.conic_opacity,
-        primitive_buffers.color,
-        primitive_buffers.inv_depth,
-        primitive_buffers.n_visible_primitives,
-        primitive_buffers.n_instances,
-        n_primitives,
-        grid.x,
-        grid.y,
-        active_sh_bases,
-        total_sh_bases,
-        static_cast<float>(width),
-        static_cast<float>(height),
-        focal_x,
-        focal_y,
-        center_x,
-        center_y,
-        near_plane,
-        far_plane
-    );
+    auto launch_preprocess = [&](auto use_inv_depth_tag) {
+        constexpr bool use_inv_depth = decltype(use_inv_depth_tag)::value;
+        kernels::forward::preprocess_cu<use_inv_depth><<<div_round_up(n_primitives, config::block_size_preprocess), config::block_size_preprocess>>>(
+            means,
+            scales,
+            rotations,
+            opacities,
+            sh_coefficients_0,
+            sh_coefficients_rest,
+            w2c,
+            cam_position,
+            primitive_buffers.depth_keys.Current(),
+            primitive_buffers.primitive_indices.Current(),
+            primitive_buffers.n_touched_tiles,
+            primitive_buffers.screen_bounds,
+            primitive_buffers.mean2d,
+            primitive_buffers.conic_opacity,
+            primitive_buffers.color,
+            primitive_buffers.inv_depth,
+            primitive_buffers.n_visible_primitives,
+            primitive_buffers.n_instances,
+            n_primitives,
+            grid.x,
+            grid.y,
+            active_sh_bases,
+            total_sh_bases,
+            static_cast<float>(width),
+            static_cast<float>(height),
+            focal_x,
+            focal_y,
+            center_x,
+            center_y,
+            near_plane,
+            far_plane
+        );
+    };
+    if (inv_depth != nullptr) launch_preprocess(std::true_type{});
+    else launch_preprocess(std::false_type{});
     CHECK_CUDA(config::debug, "preprocess")
 
     int n_visible_primitives;
@@ -188,29 +194,34 @@ std::tuple<int, int, int> faster_gs::rasterization::forward(
     char* bucket_buffers_blob = resize_bucket_buffers(required<BucketBuffers>(n_buckets));
     BucketBuffers bucket_buffers = BucketBuffers::from_blob(bucket_buffers_blob, n_buckets);
 
-    kernels::forward::blend_cu<true><<<grid, block>>>(
-        tile_buffers.instance_ranges,
-        tile_buffers.buckets_offset,
-        instance_buffers.primitive_indices.Current(),
-        primitive_buffers.mean2d,
-        primitive_buffers.conic_opacity,
-        primitive_buffers.color,
-        primitive_buffers.inv_depth,
-        bg_color,
-        image,
-        inv_depth,
-        metric_map,
-        metric_counts,
-        tile_buffers.final_transmittances,
-        tile_buffers.max_n_processed,
-        tile_buffers.n_processed,
-        bucket_buffers.tile_index,
-        bucket_buffers.color_transmittance,
-        bucket_buffers.inv_depth,
-        width,
-        height,
-        grid.x
-    );
+    auto launch_blend = [&](auto use_inv_depth_tag) {
+        constexpr bool use_inv_depth = decltype(use_inv_depth_tag)::value;
+        kernels::forward::blend_cu<true, use_inv_depth><<<grid, block>>>(
+            tile_buffers.instance_ranges,
+            tile_buffers.buckets_offset,
+            instance_buffers.primitive_indices.Current(),
+            primitive_buffers.mean2d,
+            primitive_buffers.conic_opacity,
+            primitive_buffers.color,
+            primitive_buffers.inv_depth,
+            bg_color,
+            image,
+            inv_depth,
+            metric_map,
+            metric_counts,
+            tile_buffers.final_transmittances,
+            tile_buffers.max_n_processed,
+            tile_buffers.n_processed,
+            bucket_buffers.tile_index,
+            bucket_buffers.color_transmittance,
+            bucket_buffers.inv_depth,
+            width,
+            height,
+            grid.x
+        );
+    };
+    if (inv_depth != nullptr) launch_blend(std::true_type{});
+    else launch_blend(std::false_type{});
     CHECK_CUDA(config::debug, "blend")
 
     return {n_instances, n_buckets, instance_buffers.primitive_indices.selector};
@@ -268,7 +279,7 @@ void faster_gs::rasterization::forward_image(
     cudaMemset(primitive_buffers.n_visible_primitives, 0, sizeof(uint));
     cudaMemset(primitive_buffers.n_instances, 0, sizeof(uint));
 
-    kernels::forward::preprocess_cu<<<div_round_up(n_primitives, config::block_size_preprocess), config::block_size_preprocess>>>(
+    kernels::forward::preprocess_cu<false><<<div_round_up(n_primitives, config::block_size_preprocess), config::block_size_preprocess>>>(
         means,
         scales,
         rotations,
@@ -371,7 +382,7 @@ void faster_gs::rasterization::forward_image(
         CHECK_CUDA(config::debug, "extract_instance_ranges")
     }
 
-    kernels::forward::blend_cu<false><<<grid, block>>>(
+    kernels::forward::blend_cu<false, false><<<grid, block>>>(
         tile_instance_ranges,
         nullptr,
         instance_buffers.primitive_indices.Current(),

@@ -1,5 +1,40 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.12 - 2026-05-11
+
+Implementation/config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_12_forward_depth_template/*.yaml`, copied from v0.4.11 with experiment metadata updated.
+- Templated fused CUDA `preprocess_cu` and `blend_cu` on whether inverse-depth output is needed.
+- When Metric3D/depth supervision is disabled, the forward path now compiles out per-primitive inverse-depth stores, per-fragment inverse-depth loads, bucket inverse-depth writes, and image inverse-depth writes.
+- When depth rendering is enabled, the original inverse-depth output path is still instantiated.
+- Updated `scripts/run_fastergsfusedrapid_fast_converging.py` defaults to the v0.4.12 config directory.
+
+Verification:
+
+- Build: `python ./scripts/install.py -m FasterGSFusedRapid`
+- Benchmark: `python scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_12_forward_depth_template --repeats 3 --suite-name fastergsfusedrapid_v0_4_12_forward_depth_template_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_12_forward_depth_template_r3`.
+
+| scene | v0.4.11 train | v0.4.12 train | delta | PSNR delta | SSIM delta | LPIPS delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 138.8349s | 139.2352s | +0.4003s | +0.0141 | -0.0004 | -0.0002 |
+| bonsai | 87.8292s | 87.6279s | -0.2013s | +0.0265 | +0.0004 | -0.0004 |
+| counter | 82.6424s | 82.6409s | -0.0015s | -0.0380 | +0.0004 | -0.0000 |
+| garden | 93.4276s | 92.9373s | -0.4903s | -0.0012 | -0.0004 | +0.0007 |
+| kitchen | 96.4586s | 96.0067s | -0.4519s | -0.0446 | -0.0001 | -0.0004 |
+| room | 84.8136s | 85.2873s | +0.4736s | +0.1123 | +0.0002 | -0.0005 |
+| stump | 94.9300s | 94.8581s | -0.0719s | +0.0069 | +0.0000 | -0.0001 |
+| mean | 96.9909s | 96.9419s | -0.0490s | +0.0108 | +0.0001 | -0.0001 |
+
+Profile interpretation:
+
+- The all-scene repeat-3 result is a small but positive code-level cleanup: mean train time changed by `-0.0490s` from v0.4.11 and `-0.0565s` from v0.4.10.
+- Quality stayed in the normal repeat variance range: mean PSNR `28.5738`, SSIM `0.8532`, LPIPS `0.2583`.
+- The `14000-14100` total profiler window improved on `counter`, `garden`, `kitchen`, and `stump`, was nearly neutral on `bonsai`, and regressed slightly on `bicycle` and `room`.
+- Keep v0.4.12 as the current code-level baseline because it preserves RGB semantics and removes depth-disabled forward work without changing training parameters.
+- The next target is to avoid allocating primitive and bucket inverse-depth buffers entirely when forward did not render inverse depth.
+
 ## fastergsfusedrapid-v0.4.11 - 2026-05-11
 
 Implementation/config changes:
