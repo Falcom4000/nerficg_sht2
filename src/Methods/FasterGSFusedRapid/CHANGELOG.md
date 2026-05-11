@@ -1,5 +1,45 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.3.12 - 2026-05-11
+
+Implementation/config changes:
+
+- Cached static per-view pose tensors (`w2c`, camera position) inside the FasterGSFusedRapid renderer.
+- The cache key uses the backing `View._c2w` object identity plus the configured default device, so normal dataset-view setters invalidate by replacing `_c2w`.
+- Left background color, image tensors, rasterization parameters, and FastGS density/pruning thresholds unchanged.
+- Added `configs/fastergsfusedrapid_v0_3_12_cached_view_pose/bicycle.yaml`, copied from v0.3.11 with only experiment metadata changed.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_3_12_cached_view_pose \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_3_12_cached_view_pose_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsfusedrapid-v0.3.12 | bicycle | 181.56s | 1,245,422 | 25.6352 | 0.7579 | 0.2951 | 4.63GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 112,930 -> 137,367 | 0.6990 | 0.4752 | 1.2168 | 0.2791 | 0.0000 | 2.6700 |
+| 14000-14100 | 1,354,649 -> 1,354,461 | 0.9985 | 0.4513 | 4.1157 | 0.3618 | 0.0000 | 5.9272 |
+| 25000-25100 | 1,249,070 -> 1,249,070 | 0.9801 | 0.4510 | 3.8241 | 0.0000 | 0.0000 | 5.2553 |
+
+Interpretation:
+
+- This targets repeated small CPU/GPU tensor construction at the renderer/CUDA boundary; it should preserve camera semantics for static training views.
+- Full train time improved versus v0.3.11 (`184.47s -> 181.56s`) with quality and Gaussian count in the same normal range.
+- CUDA event windows also improved in render/total time (`14000-14100` total `6.0559ms -> 5.9272ms`, `25000-25100` total `5.3266ms -> 5.2553ms`), consistent with less per-render setup overhead and normal single-run variance.
+
 ## fastergsfusedrapid-v0.3.11 - 2026-05-11
 
 Implementation/config changes:

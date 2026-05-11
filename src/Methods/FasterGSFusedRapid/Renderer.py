@@ -25,9 +25,10 @@ def extract_settings(
         raise Framework.RendererError('FasterGSFusedRapid renderer only supports perspective cameras')
     if view.camera.distortion is not None:
         Logger.log_warning('found distortion parameters that will be ignored by the rasterizer')
+    w2c, position = _cached_view_pose_tensors(view)
     return RasterizerSettings(
-        view.w2c,
-        view.position,
+        w2c,
+        position,
         bg_color,
         active_sh_bases,
         view.camera.width,
@@ -41,6 +42,20 @@ def extract_settings(
         current_mean_lr,
         adam_step_count,
     )
+
+
+def _cached_view_pose_tensors(view: View) -> tuple[torch.Tensor, torch.Tensor]:
+    """Returns cached static camera pose tensors for training dataset views."""
+    c2w = getattr(view, '_c2w', None)
+    cache_key = (id(c2w), str(Framework.config.GLOBAL.DEFAULT_DEVICE))
+    cache = getattr(view, '_fastergsfusedrapid_pose_cache', None)
+    if cache is not None and cache[0] == cache_key:
+        return cache[1], cache[2]
+
+    w2c = view.w2c.contiguous()
+    position = view.position.contiguous()
+    setattr(view, '_fastergsfusedrapid_pose_cache', (cache_key, w2c, position))
+    return w2c, position
 
 
 @Framework.Configurable.configure(
