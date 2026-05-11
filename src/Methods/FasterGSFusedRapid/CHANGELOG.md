@@ -1,5 +1,36 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.10 - 2026-05-11
+
+Implementation/config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_10_all_scenes_baseline/*.yaml` for all 7 Mip-NeRF 360 scenes.
+- Kept the v0.4.9 AnySplat-only 18k training semantics: transformed AnySplat initialization, Metric3D depth supervision disabled, and normal SH-degree schedule.
+- Updated `scripts/run_fastergsfusedrapid_fast_converging.py` defaults to the v0.4.10 config directory.
+- Generated missing AnySplat PLY priors for `bonsai`, `counter`, `garden`, `kitchen`, `room`, and `stump` using `/root/codes/siggraph_asia/anySplat/model.safetensors` plus `/root/codes/siggraph_asia/VGGT-1B/model.safetensors`.
+
+Verification:
+
+- `python scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_10_all_scenes_baseline --repeats 3 --suite-name fastergsfusedrapid_v0_4_10_all_scenes_baseline_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_10_all_scenes_baseline_r3`.
+
+| scene | runs | train time mean | train time std | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 138.5501s | 0.2221s | 25.3187 | 0.7457 | 0.2969 | 1,532,846 | 4.8952GiB |
+| bonsai | 3 | 87.6096s | 0.5755s | 31.4221 | 0.9363 | 0.2575 | 422,112 | 5.8015GiB |
+| counter | 3 | 82.4686s | 0.3285s | 28.4717 | 0.8947 | 0.2837 | 280,897 | 5.1175GiB |
+| garden | 3 | 92.8292s | 0.3152s | 26.8531 | 0.8353 | 0.1894 | 882,466 | 2.9965GiB |
+| kitchen | 3 | 96.9229s | 0.7635s | 30.9089 | 0.9192 | 0.1742 | 411,888 | 5.6806GiB |
+| room | 3 | 85.2407s | 1.3148s | 31.2798 | 0.9126 | 0.3049 | 373,885 | 6.1339GiB |
+| stump | 3 | 95.3679s | 0.5070s | 25.8333 | 0.7286 | 0.3017 | 1,212,369 | 2.5786GiB |
+| mean | 21 | 96.9984s | 18.1088s | 28.5839 | 0.8532 | 0.2583 | 730,923 | 4.7434GiB |
+
+Profile interpretation:
+
+- Repeat variance is low enough for full-scene comparisons: most scene train-time std is below `1s`, with `room` at `1.31s`.
+- Mid-training windows are still dominated by fused backward/Adam work, not FastGS scoring. At `14000-14100`, representative total/backward means are `bicycle 6.7786/4.8140ms`, `garden 4.8729/3.3702ms`, and `stump 5.2191/3.7213ms`.
+- Densify/prune cost is small in the measured windows, generally `0.26-0.39ms`, so the next code-level target should be backward memory traffic or per-Gaussian fused optimizer work rather than changing densification parameters.
+
 ## fastergsfusedrapid-v0.4.9 - 2026-05-11
 
 Implementation/config changes:

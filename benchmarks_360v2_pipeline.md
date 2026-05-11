@@ -95,7 +95,8 @@ Useful benchmark defaults are forced by the runner:
 - Metric3D inverse-depth priors are written to `<SCENE>/mono_depths/<image_stem>_depth.npy`.
 - AnySplat Gaussian initialization is written to `<SCENE>/anysplat_init/point_cloud.ply`.
 - The local AnySplat encoder also needs VGGT-1B weights. The default path is `/root/codes/siggraph_asia/VGGT-1B/model.safetensors`.
-- `configs/fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule` is the current speed-focused recommendation: AnySplat initialization only, Mip-NeRF 360 PCA/rescale applied to Gaussian means/scales/rotations, Metric3D depth supervision disabled, `18000` training iterations, and normal gradual SH-degree activation.
+- `configs/fastergsfusedrapid_v0_4_10_all_scenes_baseline` is the current all-scene baseline and speed-focused recommendation: AnySplat initialization only, Mip-NeRF 360 PCA/rescale applied to Gaussian means/scales/rotations, Metric3D depth supervision disabled, `18000` training iterations, and normal gradual SH-degree activation.
+- `configs/fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule` is the single-scene predecessor of v0.4.10 for bicycle.
 - `configs/fastergsfusedrapid_v0_4_8_anysplat_only_18k` is the same 18k schedule with all imported SH coefficients active from iteration 0.
 - `configs/fastergsfusedrapid_v0_4_6_anysplat_only_20k` is the more conservative speed/quality point.
 - `configs/fastergsfusedrapid_v0_4_5_both_world_transform` keeps both Metric3D and AnySplat enabled for diagnostics, but it is not the current recommendation because the bicycle split run regressed PSNR/SSIM and increased Gaussian count.
@@ -119,9 +120,9 @@ Then run the matching config:
 ```bash
 python ./scripts/benchmark_360v2.py \
   -m FasterGSFusedRapid \
-  --config-dir configs/fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule \
+  --config-dir configs/fastergsfusedrapid_v0_4_10_all_scenes_baseline \
   --repeats 1 \
-  --suite-name fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule \
+  --suite-name fastergsfusedrapid_v0_4_10_all_scenes_baseline_bicycle \
   --scenes bicycle
 ```
 
@@ -141,6 +142,12 @@ Use `--dry-run-priors --prepare-only` to validate paths, split generation, scale
 Current split benchmark commands:
 
 ```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_4_10_all_scenes_baseline \
+  --repeats 3 \
+  --suite-name fastergsfusedrapid_v0_4_10_all_scenes_baseline_r3
+
 python scripts/run_fastergsfusedrapid_fast_converging.py \
   --scene bicycle \
   --skip-prior-generation \
@@ -201,7 +208,20 @@ Recent bicycle single-run comparison:
 | v0.4.6 AnySplat-only 20k | 150.40s | 25.3172 | 0.7464 | 0.2966 | 1,463,917 | conservative speed/quality point |
 | v0.4.7 AnySplat-only 15k | 120.43s | 25.1440 | 0.7390 | 0.3092 | 1,507,526 | faster but quality drops |
 | v0.4.8 AnySplat-only 18k | 139.10s | 25.3164 | 0.7441 | 0.2988 | 1,502,571 | all imported SH active from iteration 0 |
-| v0.4.9 AnySplat-only 18k SH schedule | 139.33s | 25.3361 | 0.7460 | 0.2966 | 1,528,062 | current speed-focused recommendation |
+| v0.4.9 AnySplat-only 18k SH schedule | 139.33s | 25.3361 | 0.7460 | 0.2966 | 1,528,062 | single-scene predecessor |
+| v0.4.10 all-scene baseline, bicycle mean | 138.55s | 25.3187 | 0.7457 | 0.2969 | 1,532,846 | current speed-focused recommendation |
+
+Current all-scene repeat-3 baseline:
+
+| scene | train time mean | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 138.55s | 25.3187 | 0.7457 | 0.2969 | 1,532,846 | 4.8952GiB |
+| bonsai | 87.61s | 31.4221 | 0.9363 | 0.2575 | 422,112 | 5.8015GiB |
+| counter | 82.47s | 28.4717 | 0.8947 | 0.2837 | 280,897 | 5.1175GiB |
+| garden | 92.83s | 26.8531 | 0.8353 | 0.1894 | 882,466 | 2.9965GiB |
+| kitchen | 96.92s | 30.9089 | 0.9192 | 0.1742 | 411,888 | 5.6806GiB |
+| room | 85.24s | 31.2798 | 0.9126 | 0.3049 | 373,885 | 6.1339GiB |
+| stump | 95.37s | 25.8333 | 0.7286 | 0.3017 | 1,212,369 | 2.5786GiB |
 
 The current integration assumes Mip-NeRF 360 layout and uses scene-relative defaults:
 
