@@ -1,5 +1,31 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.9 - 2026-05-11
+
+Implementation/config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule/bicycle.yaml`.
+- Kept v0.4.8's AnySplat-only 18k schedule, but set `TRAINING.ANYSPLAT_INITIALIZATION.SET_ACTIVE_SH_DEGREE=false`.
+- Updated `scripts/run_fastergsfusedrapid_fast_converging.py` defaults to the v0.4.9 config.
+
+Reason:
+
+- AnySplat's own `GaussianAdapter` leaves SH rotation commented out, and the PLY exporter does not rotate harmonics into the transformed world frame.
+- Starting from SH degree 0 and using the normal training SH schedule is closer to standard 3DGS training semantics than activating all imported SH coefficients at iteration 0.
+
+Verification:
+
+- `python scripts/run_fastergsfusedrapid_fast_converging.py --scene bicycle --skip-prior-generation --prior-mode none --config-dir configs/fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule --suite-name fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule_bicycle --repeats 1`
+- Result: train `139.3274s`, wall `197.6210s`, PSNR `25.3361`, SSIM `0.7460`, LPIPS `0.2966`, final Gaussians `1,528,062`, VRAM allocated/reserved `4.8892/5.4062 GiB`.
+- Profile windows:
+  - `1000-1100`: `render=0.9298ms`, `rgb_loss=0.4638ms`, `depth_loss=0.0021ms`, `backward=2.7022ms`, `densify/prune=0.3528ms`, total `4.4507ms`, Gaussians `827,004 -> 861,776`.
+  - `14000-14100`: `render=1.1200ms`, `rgb_loss=0.4518ms`, `depth_loss=0.0019ms`, `backward=4.8227ms`, `densify/prune=0.3880ms`, total `6.7844ms`, Gaussians `1,610,039 -> 1,609,128`.
+
+Interpretation:
+
+- v0.4.9 is now the recommended speed-focused config: it keeps v0.4.8 speed while improving PSNR, SSIM, and LPIPS.
+- Compared with v0.3.14, v0.4.9 is `23.7%` faster in measured train time (`182.59s -> 139.33s`) with quality still in the normal single-run range.
+
 ## fastergsfusedrapid-v0.4.8 - 2026-05-11
 
 Implementation/config changes:

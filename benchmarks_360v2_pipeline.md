@@ -95,7 +95,8 @@ Useful benchmark defaults are forced by the runner:
 - Metric3D inverse-depth priors are written to `<SCENE>/mono_depths/<image_stem>_depth.npy`.
 - AnySplat Gaussian initialization is written to `<SCENE>/anysplat_init/point_cloud.ply`.
 - The local AnySplat encoder also needs VGGT-1B weights. The default path is `/root/codes/siggraph_asia/VGGT-1B/model.safetensors`.
-- `configs/fastergsfusedrapid_v0_4_8_anysplat_only_18k` is the current speed-focused recommendation: AnySplat initialization only, Mip-NeRF 360 PCA/rescale applied to Gaussian means/scales/rotations, Metric3D depth supervision disabled, and `18000` training iterations.
+- `configs/fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule` is the current speed-focused recommendation: AnySplat initialization only, Mip-NeRF 360 PCA/rescale applied to Gaussian means/scales/rotations, Metric3D depth supervision disabled, `18000` training iterations, and normal gradual SH-degree activation.
+- `configs/fastergsfusedrapid_v0_4_8_anysplat_only_18k` is the same 18k schedule with all imported SH coefficients active from iteration 0.
 - `configs/fastergsfusedrapid_v0_4_6_anysplat_only_20k` is the more conservative speed/quality point.
 - `configs/fastergsfusedrapid_v0_4_5_both_world_transform` keeps both Metric3D and AnySplat enabled for diagnostics, but it is not the current recommendation because the bicycle split run regressed PSNR/SSIM and increased Gaussian count.
 - Training consumes priors through `TRAINING.DEPTH_SUPERVISION` and `TRAINING.ANYSPLAT_INITIALIZATION`.
@@ -118,9 +119,9 @@ Then run the matching config:
 ```bash
 python ./scripts/benchmark_360v2.py \
   -m FasterGSFusedRapid \
-  --config-dir configs/fastergsfusedrapid_v0_4_8_anysplat_only_18k \
+  --config-dir configs/fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule \
   --repeats 1 \
-  --suite-name fastergsfusedrapid_v0_4_8_anysplat_only_18k \
+  --suite-name fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule \
   --scenes bicycle
 ```
 
@@ -140,6 +141,14 @@ Use `--dry-run-priors --prepare-only` to validate paths, split generation, scale
 Current split benchmark commands:
 
 ```bash
+python scripts/run_fastergsfusedrapid_fast_converging.py \
+  --scene bicycle \
+  --skip-prior-generation \
+  --prior-mode none \
+  --config-dir configs/fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule \
+  --suite-name fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule_bicycle \
+  --repeats 1
+
 python scripts/run_fastergsfusedrapid_fast_converging.py \
   --scene bicycle \
   --skip-prior-generation \
@@ -191,7 +200,8 @@ Recent bicycle single-run comparison:
 | v0.4.5 AnySplat+Depth 30k | 243.88s | 24.3770 | 0.7036 | 0.2967 | 1,914,620 | not recommended |
 | v0.4.6 AnySplat-only 20k | 150.40s | 25.3172 | 0.7464 | 0.2966 | 1,463,917 | conservative speed/quality point |
 | v0.4.7 AnySplat-only 15k | 120.43s | 25.1440 | 0.7390 | 0.3092 | 1,507,526 | faster but quality drops |
-| v0.4.8 AnySplat-only 18k | 139.10s | 25.3164 | 0.7441 | 0.2988 | 1,502,571 | current speed-focused recommendation |
+| v0.4.8 AnySplat-only 18k | 139.10s | 25.3164 | 0.7441 | 0.2988 | 1,502,571 | all imported SH active from iteration 0 |
+| v0.4.9 AnySplat-only 18k SH schedule | 139.33s | 25.3361 | 0.7460 | 0.2966 | 1,528,062 | current speed-focused recommendation |
 
 The current integration assumes Mip-NeRF 360 layout and uses scene-relative defaults:
 
