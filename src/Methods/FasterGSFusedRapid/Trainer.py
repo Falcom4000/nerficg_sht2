@@ -156,7 +156,6 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
             metric_map = loss_map > self.FASTGS_LOSS_THRESHOLD
 
             _, metric_counts = self.renderer.render_image_metric_counts(view=view, metric_map=metric_map, bg_color=bg_color)
-            metric_counts = metric_counts.to(dtype=torch.float32)
 
             if compute_importance:
                 full_metric_counts = metric_counts.clone() if full_metric_counts is None else full_metric_counts + metric_counts

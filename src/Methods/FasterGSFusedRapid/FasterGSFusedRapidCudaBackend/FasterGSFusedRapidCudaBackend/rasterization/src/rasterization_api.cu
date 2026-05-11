@@ -43,14 +43,13 @@ faster_gs::rasterization::forward_wrapper(
     const int n_primitives = means.size(0);
     const int total_sh_bases = sh_coefficients_rest.size(1);
     const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
-    const torch::TensorOptions int_options = torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA);
     const torch::TensorOptions byte_options = torch::TensorOptions().dtype(torch::kByte).device(torch::kCUDA);
     torch::Tensor image = torch::empty({3, height, width}, float_options);
     const bool collect_metric_counts = metric_map.size(0) > 0;
     if (collect_metric_counts && metric_map.scalar_type() != torch::kBool)
         throw std::runtime_error("metric_map must be a CUDA bool tensor");
     const torch::Tensor metric_map_contiguous = collect_metric_counts ? metric_map.contiguous() : metric_map;
-    torch::Tensor metric_counts = collect_metric_counts ? torch::zeros({n_primitives}, int_options) : torch::empty({0}, int_options);
+    torch::Tensor metric_counts = collect_metric_counts ? torch::zeros({n_primitives}, float_options) : torch::empty({0}, float_options);
     torch::Tensor primitive_buffers = torch::empty({0}, byte_options);
     torch::Tensor tile_buffers = torch::empty({0}, byte_options);
     torch::Tensor instance_buffers = torch::empty({0}, byte_options);
@@ -76,7 +75,7 @@ faster_gs::rasterization::forward_wrapper(
         reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
         reinterpret_cast<float3*>(bg_color.contiguous().data_ptr<float>()),
         image.data_ptr<float>(),
-        collect_metric_counts ? metric_counts.data_ptr<int>() : nullptr,
+        collect_metric_counts ? metric_counts.data_ptr<float>() : nullptr,
         n_primitives,
         active_sh_bases,
         total_sh_bases,
@@ -133,14 +132,13 @@ faster_gs::rasterization::forward_image_wrapper(
     const int n_primitives = means.size(0);
     const int total_sh_bases = sh_coefficients_rest.size(1);
     const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
-    const torch::TensorOptions int_options = torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA);
     const torch::TensorOptions byte_options = torch::TensorOptions().dtype(torch::kByte).device(torch::kCUDA);
     torch::Tensor image = torch::empty({3, height, width}, float_options);
     const bool collect_metric_counts = metric_map.size(0) > 0;
     if (collect_metric_counts && metric_map.scalar_type() != torch::kBool)
         throw std::runtime_error("metric_map must be a CUDA bool tensor");
     const torch::Tensor metric_map_contiguous = collect_metric_counts ? metric_map.contiguous() : metric_map;
-    torch::Tensor metric_counts = collect_metric_counts ? torch::zeros({n_primitives}, int_options) : torch::empty({0}, int_options);
+    torch::Tensor metric_counts = collect_metric_counts ? torch::zeros({n_primitives}, float_options) : torch::empty({0}, float_options);
     torch::Tensor primitive_buffers = torch::empty({0}, byte_options);
     torch::Tensor tile_range_buffers = torch::empty({0}, byte_options);
     torch::Tensor instance_buffers = torch::empty({0}, byte_options);
@@ -163,7 +161,7 @@ faster_gs::rasterization::forward_image_wrapper(
         reinterpret_cast<float3*>(cam_position.contiguous().data_ptr<float>()),
         reinterpret_cast<float3*>(bg_color.contiguous().data_ptr<float>()),
         image.data_ptr<float>(),
-        collect_metric_counts ? metric_counts.data_ptr<int>() : nullptr,
+        collect_metric_counts ? metric_counts.data_ptr<float>() : nullptr,
         n_primitives,
         active_sh_bases,
         total_sh_bases,

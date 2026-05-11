@@ -1,5 +1,46 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.3.11 - 2026-05-11
+
+Implementation/config changes:
+
+- Changed FastGS metric-count accumulation buffers from `int32` tensors to `float32` tensors in the fused CUDA forward and no-grad image paths.
+- Kept the same per-pixel `metric_map` condition and one-count-per-contributing-Gaussian atomic update, but now uses `atomicAdd(..., 1.0f)` so Python score computation can consume the counts directly.
+- Removed the per-score-view `metric_counts.to(dtype=torch.float32)` conversion in `compute_fastgs_scores`.
+- Added `configs/fastergsfusedrapid_v0_3_11_float_metric_counts/bicycle.yaml`, copied from v0.3.10 with only experiment metadata changed.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_3_11_float_metric_counts \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_3_11_float_metric_counts_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsfusedrapid-v0.3.11 | bicycle | 184.47s | 1,246,971 | 25.6292 | 0.7580 | 0.2941 | 4.64GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 113,235 -> 137,908 | 0.7917 | 0.4515 | 1.2244 | 0.2976 | 0.0000 | 2.7651 |
+| 14000-14100 | 1,357,569 -> 1,357,384 | 1.0771 | 0.4525 | 4.1479 | 0.3784 | 0.0000 | 6.0559 |
+| 25000-25100 | 1,250,715 -> 1,250,715 | 1.0600 | 0.4504 | 3.8162 | 0.0000 | 0.0000 | 5.3266 |
+
+Interpretation:
+
+- The score/prune math still receives exact small integer counts because float32 represents all expected per-view pixel counts exactly; this change only removes an intermediate dtype conversion allocation.
+- Full train time improved versus v0.3.10 (`185.49s -> 184.47s`) and quality stayed in the same normal range.
+- Late profile window improved (`25000-25100` total `5.4325ms -> 5.3266ms`), while early densify/prune was noisier. Keep this as a score/prune path cleanup rather than a core backward-kernel speedup.
+- This follows the CUDA guide's profile-first iteration principle and targets unnecessary memory traffic at the Python/CUDA boundary without changing training parameters.
+
 ## fastergsfusedrapid-v0.3.10 - 2026-05-10
 
 Implementation/config changes:

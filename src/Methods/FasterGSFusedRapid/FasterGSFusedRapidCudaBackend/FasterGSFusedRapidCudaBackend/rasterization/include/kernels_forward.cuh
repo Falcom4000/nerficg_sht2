@@ -368,7 +368,7 @@ namespace faster_gs::rasterization::kernels::forward {
         const float3* __restrict__ bg_color,
         float* __restrict__ image,
         const bool* __restrict__ metric_map,
-        int* __restrict__ metric_counts,
+        float* __restrict__ metric_counts,
         float* __restrict__ tile_final_transmittances,
         uint* __restrict__ tile_max_n_processed,
         uint* __restrict__ tile_n_processed,
@@ -450,7 +450,7 @@ namespace faster_gs::rasterization::kernels::forward {
                 if (metric_counts != nullptr) {
                     const uint pixel_idx = width * pixel_coords.y + pixel_coords.x;
                     if (metric_map[pixel_idx]) {
-                        atomicAdd(&metric_counts[collected_primitive_idx[j]], 1);
+                        atomicAdd(&metric_counts[collected_primitive_idx[j]], 1.0f);
                     }
                 }
 
