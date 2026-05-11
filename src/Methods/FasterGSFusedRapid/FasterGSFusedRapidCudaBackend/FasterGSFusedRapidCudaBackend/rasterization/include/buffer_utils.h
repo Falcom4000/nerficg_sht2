@@ -57,7 +57,7 @@ namespace faster_gs::rasterization {
         uint* n_visible_primitives;
         uint* n_instances;
 
-        static PrimitiveBuffers from_blob(char*& blob, int n_primitives) {
+        static PrimitiveBuffers from_blob(char*& blob, int n_primitives, bool allocate_inv_depth = true) {
             PrimitiveBuffers buffers;
             uint* depth_keys_current;
             obtain(blob, depth_keys_current, n_primitives);
@@ -75,7 +75,8 @@ namespace faster_gs::rasterization {
             obtain(blob, buffers.mean2d, n_primitives);
             obtain(blob, buffers.conic_opacity, n_primitives);
             obtain(blob, buffers.color, n_primitives);
-            obtain(blob, buffers.inv_depth, n_primitives);
+            if (allocate_inv_depth) obtain(blob, buffers.inv_depth, n_primitives);
+            else buffers.inv_depth = nullptr;
             cub::DeviceScan::ExclusiveSum(
                 nullptr, buffers.cub_workspace_size,
                 buffers.offset, buffers.offset,
@@ -157,11 +158,12 @@ namespace faster_gs::rasterization {
         float4* color_transmittance;
         float* inv_depth;
 
-        static BucketBuffers from_blob(char*& blob, int n_buckets) {
+        static BucketBuffers from_blob(char*& blob, int n_buckets, bool allocate_inv_depth = true) {
             BucketBuffers buffers;
             obtain(blob, buffers.tile_index, n_buckets);
             obtain(blob, buffers.color_transmittance, n_buckets * config::block_size_blend);
-            obtain(blob, buffers.inv_depth, n_buckets * config::block_size_blend);
+            if (allocate_inv_depth) obtain(blob, buffers.inv_depth, n_buckets * config::block_size_blend);
+            else buffers.inv_depth = nullptr;
             return buffers;
         }
     };

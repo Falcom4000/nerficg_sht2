@@ -43,6 +43,7 @@ std::tuple<int, int, int> faster_gs::rasterization::forward(
     const dim3 block(config::tile_width, config::tile_height, 1);
     const int n_tiles = grid.x * grid.y;
     const int end_bit = extract_end_bit(n_tiles - 1);
+    const bool use_inv_depth_buffers = inv_depth != nullptr;
 
     char* tile_buffers_blob = resize_tile_buffers(required<TileBuffers>(n_tiles));
     TileBuffers tile_buffers = TileBuffers::from_blob(tile_buffers_blob, n_tiles);
@@ -58,8 +59,8 @@ std::tuple<int, int, int> faster_gs::rasterization::forward(
     }
     else cudaMemset(tile_buffers.instance_ranges, 0, sizeof(uint2) * n_tiles);
 
-    char* primitive_buffers_blob = resize_primitive_buffers(required<PrimitiveBuffers>(n_primitives));
-    PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives);
+    char* primitive_buffers_blob = resize_primitive_buffers(required<PrimitiveBuffers>(n_primitives, use_inv_depth_buffers));
+    PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives, use_inv_depth_buffers);
 
     cudaMemset(primitive_buffers.n_visible_primitives, 0, sizeof(uint));
     cudaMemset(primitive_buffers.n_instances, 0, sizeof(uint));
@@ -100,7 +101,7 @@ std::tuple<int, int, int> faster_gs::rasterization::forward(
             far_plane
         );
     };
-    if (inv_depth != nullptr) launch_preprocess(std::true_type{});
+    if (use_inv_depth_buffers) launch_preprocess(std::true_type{});
     else launch_preprocess(std::false_type{});
     CHECK_CUDA(config::debug, "preprocess")
 
@@ -191,8 +192,8 @@ std::tuple<int, int, int> faster_gs::rasterization::forward(
     int n_buckets;
     cudaMemcpy(&n_buckets, tile_buffers.buckets_offset + n_tiles - 1, sizeof(uint), cudaMemcpyDeviceToHost);
 
-    char* bucket_buffers_blob = resize_bucket_buffers(required<BucketBuffers>(n_buckets));
-    BucketBuffers bucket_buffers = BucketBuffers::from_blob(bucket_buffers_blob, n_buckets);
+    char* bucket_buffers_blob = resize_bucket_buffers(required<BucketBuffers>(n_buckets, use_inv_depth_buffers));
+    BucketBuffers bucket_buffers = BucketBuffers::from_blob(bucket_buffers_blob, n_buckets, use_inv_depth_buffers);
 
     auto launch_blend = [&](auto use_inv_depth_tag) {
         constexpr bool use_inv_depth = decltype(use_inv_depth_tag)::value;
@@ -220,7 +221,7 @@ std::tuple<int, int, int> faster_gs::rasterization::forward(
             grid.x
         );
     };
-    if (inv_depth != nullptr) launch_blend(std::true_type{});
+    if (use_inv_depth_buffers) launch_blend(std::true_type{});
     else launch_blend(std::false_type{});
     CHECK_CUDA(config::debug, "blend")
 
@@ -273,8 +274,8 @@ void faster_gs::rasterization::forward_image(
     }
     else cudaMemset(tile_instance_ranges, 0, sizeof(uint2) * n_tiles);
 
-    char* primitive_buffers_blob = resize_primitive_buffers(required<PrimitiveBuffers>(n_primitives));
-    PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives);
+    char* primitive_buffers_blob = resize_primitive_buffers(required<PrimitiveBuffers>(n_primitives, false));
+    PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives, false);
 
     cudaMemset(primitive_buffers.n_visible_primitives, 0, sizeof(uint));
     cudaMemset(primitive_buffers.n_instances, 0, sizeof(uint));

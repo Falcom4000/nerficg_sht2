@@ -213,6 +213,7 @@ Recent bicycle single-run comparison:
 | v0.4.10 all-scene baseline, bicycle mean | 138.55s | 25.3187 | 0.7457 | 0.2969 | 1,532,846 | all-scene predecessor |
 | v0.4.11 depth-off backward template, bicycle mean | 138.83s | 25.3183 | 0.7460 | 0.2971 | 1,525,063 | neutral end-to-end, kept as depth path cleanup |
 | v0.4.12 depth-off forward template, bicycle mean | 139.24s | 25.3324 | 0.7456 | 0.2969 | 1,534,271 | current code-level baseline; all-scene mean slightly faster |
+| v0.4.13 optional depth buffers, bicycle mean | 139.28s | 25.3072 | 0.7455 | 0.2973 | 1,529,843 | not the default; tiny VRAM cleanup but all-scene mean slower |
 
 Current all-scene repeat-3 baseline, `configs/fastergsfusedrapid_v0_4_12_forward_depth_template`:
 

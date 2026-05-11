@@ -239,6 +239,9 @@ void faster_gs::rasterization::backward_wrapper(
 
 	    const bool update_densification_info = densification_info.size(0) > 0;
 	    const bool use_inv_depth_grad = grad_inv_depth.size(0) > 0;
+	    const bool has_inv_depth_buffers = inv_depth.size(0) > 0;
+	    if (use_inv_depth_grad && !has_inv_depth_buffers)
+	        throw std::runtime_error("grad_inv_depth is non-empty but inv_depth forward buffers are absent");
 	    torch::Tensor grad_mean2d_abs_helper = update_densification_info ? torch::zeros({n_primitives, 2}, float_options) : torch::empty({0}, float_options);
 	    torch::Tensor grad_inv_depth_helper = use_inv_depth_grad ? torch::zeros({n_primitives}, float_options) : torch::empty({0}, float_options);
 	    float* grad_conic_opacity_ptr = grad_conic_opacity_helper.data_ptr<float>();
@@ -249,7 +252,7 @@ void faster_gs::rasterization::backward_wrapper(
 	        grad_image_contiguous.data_ptr<float>(),
 	        use_inv_depth_grad ? grad_inv_depth_contiguous.data_ptr<float>() : nullptr,
 	        image.data_ptr<float>(),
-	        use_inv_depth_grad ? inv_depth.data_ptr<float>() : nullptr,
+	        has_inv_depth_buffers ? inv_depth.data_ptr<float>() : nullptr,
 	        reinterpret_cast<float3*>(means.data_ptr<float>()),
         reinterpret_cast<float3*>(scales.data_ptr<float>()),
         reinterpret_cast<float4*>(rotations.data_ptr<float>()),

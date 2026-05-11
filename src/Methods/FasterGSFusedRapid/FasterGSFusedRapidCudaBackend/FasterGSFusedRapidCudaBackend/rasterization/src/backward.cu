@@ -56,15 +56,16 @@ void faster_gs::rasterization::backward(
     const dim3 grid(div_round_up(width, config::tile_width), div_round_up(height, config::tile_height), 1);
     const int n_tiles = grid.x * grid.y;
     const int end_bit = extract_end_bit(n_tiles - 1);
-
-    PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives);
-    TileBuffers tile_buffers = TileBuffers::from_blob(tile_buffers_blob, n_tiles);
-    InstanceBuffers instance_buffers = InstanceBuffers::from_blob(instance_buffers_blob, n_instances, end_bit);
-    BucketBuffers bucket_buffers = BucketBuffers::from_blob(bucket_buffers_blob, n_buckets);
-    instance_buffers.primitive_indices.selector = instance_primitive_indices_selector;
-
+    const bool has_inv_depth_buffers = inv_depth != nullptr;
     const bool update_densification_info = densification_info != nullptr;
     const bool use_inv_depth_grad = grad_inv_depth != nullptr;
+
+    PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives, has_inv_depth_buffers);
+    TileBuffers tile_buffers = TileBuffers::from_blob(tile_buffers_blob, n_tiles);
+    InstanceBuffers instance_buffers = InstanceBuffers::from_blob(instance_buffers_blob, n_instances, end_bit);
+    BucketBuffers bucket_buffers = BucketBuffers::from_blob(bucket_buffers_blob, n_buckets, has_inv_depth_buffers);
+    instance_buffers.primitive_indices.selector = instance_primitive_indices_selector;
+
     auto launch_blend_backward = [&](auto update_densification_tag, auto use_inv_depth_grad_tag) {
         constexpr bool update = decltype(update_densification_tag)::value;
         constexpr bool use_inv_depth = decltype(use_inv_depth_grad_tag)::value;

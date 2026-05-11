@@ -1,5 +1,40 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.13 - 2026-05-11
+
+Implementation/config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_13_optional_depth_buffers/*.yaml`, copied from v0.4.12 with experiment metadata updated.
+- Made `PrimitiveBuffers::from_blob` and `BucketBuffers::from_blob` optionally omit inverse-depth storage.
+- In training forward, primitive and bucket inverse-depth buffers are allocated only when `render_inv_depth=true`.
+- In image-only forward, primitive inverse-depth storage is omitted.
+- In backward, buffer layout is parsed from whether the forward pass produced an `inv_depth` tensor, while depth-gradient kernel code is still selected from whether `grad_inv_depth` is non-empty.
+- Added a guard for the invalid case where `grad_inv_depth` is non-empty but the forward pass did not allocate inverse-depth buffers.
+
+Verification:
+
+- Build: `python ./scripts/install.py -m FasterGSFusedRapid`
+- Benchmark: `python scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_13_optional_depth_buffers --repeats 3 --suite-name fastergsfusedrapid_v0_4_13_optional_depth_buffers_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_13_optional_depth_buffers_r3`.
+
+| scene | v0.4.12 train | v0.4.13 train | delta | PSNR delta | SSIM delta | LPIPS delta | VRAM delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 139.2352s | 139.2777s | +0.0425s | -0.0252 | -0.0001 | +0.0004 | -0.0064GiB |
+| bonsai | 87.6279s | 87.4210s | -0.2069s | +0.0534 | +0.0005 | -0.0002 | +0.0000GiB |
+| counter | 82.6409s | 82.4069s | -0.2340s | +0.0125 | -0.0001 | +0.0002 | -0.0002GiB |
+| garden | 92.9373s | 93.4396s | +0.5023s | +0.0667 | +0.0004 | -0.0002 | +0.0019GiB |
+| kitchen | 96.0067s | 96.4273s | +0.4206s | +0.0777 | +0.0003 | -0.0005 | +0.0000GiB |
+| room | 85.2873s | 85.1672s | -0.1200s | -0.0096 | -0.0001 | +0.0000 | +0.0000GiB |
+| stump | 94.8581s | 95.0969s | +0.2389s | +0.0041 | +0.0002 | +0.0002 | +0.0013GiB |
+| mean | 96.9419s | 97.0338s | +0.0919s | +0.0257 | +0.0001 | -0.0000 | -0.0004GiB |
+
+Profile interpretation:
+
+- v0.4.13 is not a speed improvement over v0.4.12: all-scene mean train time regressed by `+0.0919s`.
+- Peak allocated VRAM changed by only `-0.0004GiB` on the all-scene mean, so the omitted inverse-depth temporary buffers are not a meaningful share of total memory under the current preloaded-image training path.
+- The `14000-14100` total profiler window improved on `bicycle`, `bonsai`, `kitchen`, and `room`, but regressed on `counter`, `garden`, and `stump`.
+- Keep the implementation because it preserves the correct depth/no-depth buffer layout and is useful if depth rendering is toggled, but keep v0.4.12 as the current speed-focused default.
+
 ## fastergsfusedrapid-v0.4.12 - 2026-05-11
 
 Implementation/config changes:
