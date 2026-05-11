@@ -7,6 +7,7 @@ from FasterGSFusedRapidCudaBackend import _C
 
 _EMPTY_CPU = torch.empty(0)
 _EMPTY_BOOL_BY_DEVICE: dict[torch.device, torch.Tensor] = {}
+_EMPTY_FLOAT_BY_DEVICE: dict[torch.device, torch.Tensor] = {}
 
 
 def _empty_bool_like(tensor: torch.Tensor) -> torch.Tensor:
@@ -15,6 +16,15 @@ def _empty_bool_like(tensor: torch.Tensor) -> torch.Tensor:
     if empty is None:
         empty = torch.empty(0, dtype=torch.bool, device=device)
         _EMPTY_BOOL_BY_DEVICE[device] = empty
+    return empty
+
+
+def _empty_float_like(tensor: torch.Tensor) -> torch.Tensor:
+    device = tensor.device
+    empty = _EMPTY_FLOAT_BY_DEVICE.get(device)
+    if empty is None:
+        empty = torch.empty(0, dtype=torch.float32, device=device)
+        _EMPTY_FLOAT_BY_DEVICE[device] = empty
     return empty
 
 
@@ -72,10 +82,12 @@ class _Rasterize(torch.autograd.Function):
         moments_sh_coefficients_rest: torch.Tensor,
         densification_info: torch.Tensor,
         metric_map: torch.Tensor,
+        render_inv_depth: bool,
         rasterizer_settings: RasterizerSettings,
     ) -> 'tuple[torch.Tensor, torch.Tensor, torch.Tensor]':
         (
             image,
+            inv_depth,
             metric_counts,
             primitive_buffers, tile_buffers, instance_buffers, bucket_buffers,
             n_instances, n_buckets, instance_primitive_indices_selector
@@ -87,12 +99,14 @@ class _Rasterize(torch.autograd.Function):
             sh_coefficients_0,
             sh_coefficients_rest,
             metric_map,
+            render_inv_depth,
             *rasterizer_settings.as_tuple(),
         )
         ctx.rasterizer_settings = rasterizer_settings
         ctx.buffer_state = (n_instances, n_buckets, instance_primitive_indices_selector)
         ctx.save_for_backward(
             image,
+            inv_depth,
             primitive_buffers,
             tile_buffers,
             instance_buffers,
@@ -125,13 +139,14 @@ class _Rasterize(torch.autograd.Function):
         ctx.mark_non_differentiable(moments_sh_coefficients_rest)
         ctx.mark_non_differentiable(densification_info)
         ctx.mark_non_differentiable(metric_counts)
-        return image, metric_counts, autograd_dummy
+        return image, inv_depth, metric_counts, autograd_dummy
 
     @staticmethod
     @once_differentiable
     def backward(
         ctx: Any,
         grad_image: torch.Tensor,
+        grad_inv_depth: torch.Tensor | None,
         _,
         __,
     ) -> 'tuple[None, None, None, None, None, None, None, None, None, None, None, None, None, None, None]':
@@ -150,6 +165,7 @@ class _Rasterize(torch.autograd.Function):
             ctx.moments_sh_coefficients_0,
             ctx.moments_sh_coefficients_rest,
             grad_image,
+            _empty_float_like(grad_image) if grad_inv_depth is None else grad_inv_depth,
             *ctx.saved_tensors,
             *ctx.rasterizer_settings.as_tuple(),
             *ctx.buffer_state,
@@ -170,6 +186,7 @@ class _Rasterize(torch.autograd.Function):
             None,  # moments_sh_coefficients_rest
             None,  # densification_info
             None,  # metric_map
+            None,  # render_inv_depth
             None,  # rasterizer_settings
         )
 
@@ -192,8 +209,9 @@ def diff_rasterize(
     moments_sh_coefficients_rest: torch.Tensor = None,
     metric_map: torch.Tensor = None,
     return_metric_counts: bool = False,
+    return_inv_depth: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-    image, metric_counts, autograd_dummy = _Rasterize.apply(
+    image, inv_depth, metric_counts, autograd_dummy = _Rasterize.apply(
         autograd_dummy,
         means,
         scales,
@@ -209,11 +227,12 @@ def diff_rasterize(
         _EMPTY_CPU if moments_sh_coefficients_rest is None else moments_sh_coefficients_rest,
         densification_info,
         _empty_bool_like(means) if metric_map is None else metric_map,
+        return_inv_depth,
         rasterizer_settings,
     )
     if return_metric_counts:
-        return image, metric_counts
-    return image, autograd_dummy
+        return image, inv_depth, metric_counts
+    return image, inv_depth, autograd_dummy
 
 
 @torch.no_grad()

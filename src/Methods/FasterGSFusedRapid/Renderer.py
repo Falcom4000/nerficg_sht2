@@ -89,9 +89,9 @@ class FasterGSFusedRapidRenderer(BaseRenderer):
         else:
             return self.render_image_inference(view, to_chw)
 
-    def render_image_training(self, view: View, update_densification_info: bool, bg_color: torch.Tensor, adam_step_count: int, autograd_dummy: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def render_image_training(self, view: View, update_densification_info: bool, bg_color: torch.Tensor, adam_step_count: int, autograd_dummy: torch.Tensor, return_inv_depth: bool = False) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Renders an image for a given view."""
-        image, autograd_dummy = diff_rasterize(
+        image, inv_depth, autograd_dummy = diff_rasterize(
             means=self.model.gaussians.means,
             moments_means=self.model.gaussians.moments_means,
             scales=self.model.gaussians.raw_scales,
@@ -107,9 +107,10 @@ class FasterGSFusedRapidRenderer(BaseRenderer):
             autograd_dummy=autograd_dummy,
             densification_info=self.model.gaussians.densification_info if update_densification_info else self._empty_tensor(torch.float32),
             metric_map=self._empty_tensor(torch.bool),
+            return_inv_depth=return_inv_depth,
             rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, bg_color, self.model.gaussians.lr_means, adam_step_count),
         )
-        return image, autograd_dummy
+        return image, inv_depth, autograd_dummy
 
     @torch.no_grad()
     def render_image_fastgs_score(self, view: View, bg_color: torch.Tensor = None) -> torch.Tensor:

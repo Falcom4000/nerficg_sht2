@@ -5,16 +5,17 @@
 
 namespace faster_gs::rasterization {
 
-    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int>
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int>
     forward_wrapper(
         const torch::Tensor& means,
         const torch::Tensor& scales,
         const torch::Tensor& rotations,
         const torch::Tensor& opacities,
-        const torch::Tensor& sh_coefficients_0,
-        const torch::Tensor& sh_coefficients_rest,
-        const torch::Tensor& metric_map,
-        const torch::Tensor& w2c,
+	        const torch::Tensor& sh_coefficients_0,
+	        const torch::Tensor& sh_coefficients_rest,
+	        const torch::Tensor& metric_map,
+	        const bool render_inv_depth,
+	        const torch::Tensor& w2c,
         const torch::Tensor& cam_position,
         const torch::Tensor& bg_color,
         const int active_sh_bases,
@@ -68,7 +69,9 @@ namespace faster_gs::rasterization {
         torch::Tensor& moments_sh_coefficients_0,
         torch::Tensor& moments_sh_coefficients_rest,
         const torch::Tensor& grad_image,
+        const torch::Tensor& grad_inv_depth,
         const torch::Tensor& image,
+        const torch::Tensor& inv_depth,
         const torch::Tensor& primitive_buffers,
         const torch::Tensor& tile_buffers,
         const torch::Tensor& instance_buffers,

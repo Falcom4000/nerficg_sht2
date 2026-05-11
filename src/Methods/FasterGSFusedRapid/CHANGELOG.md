@@ -1,5 +1,39 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.0 - 2026-05-11
+
+Implementation/config changes:
+
+- Added an optional Metric3D inverse-depth supervision path for training.
+- The fused CUDA training rasterizer can now output blended inverse depth using the same front-to-back alpha weights as RGB.
+- Added inverse-depth bucket state so backward can reconstruct per-pixel depth remainders and propagate depth gradients through alpha, opacity, conic/mean2D, and centroid depth.
+- Added a per-Gaussian inverse-depth helper gradient in preprocess backward, applying `d(1 / z) / dz = -1 / z^2` to the camera-space mean gradient.
+- Kept inverse-depth rendering disabled unless `TRAINING.DEPTH_SUPERVISION.ACTIVE` is true, preserving normal RGB-only training behavior.
+- Added optional Metric3D prior loading from `mono_depths/<image_stem>_depth.npy` for Mip-NeRF 360 style image paths.
+- Added `TRAINING.DEPTH_SUPERVISION` config fields: `ACTIVE`, `DIRECTORY`, `WEIGHT_INIT`, `WEIGHT_FINAL`, `LOSS_MULTIPLIER`, and `MIN_VALID_INV_DEPTH`.
+- Added `configs/fastergsfusedrapid_v0_4_0_depth_prior/bicycle.yaml`, copied from v0.3.14 with depth supervision enabled.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_4_0_depth_prior \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_4_0_depth_prior_bicycle \
+  --scenes bicycle
+```
+
+Verification:
+
+- `python -m py_compile src/Methods/FasterGSFusedRapid/Trainer.py src/Methods/FasterGSFusedRapid/Renderer.py src/Methods/FasterGSFusedRapid/FasterGSFusedRapidCudaBackend/FasterGSFusedRapidCudaBackend/torch_bindings/rasterization.py`
+- `python ./scripts/install.py -m FasterGSFusedRapid`
+
+Interpretation:
+
+- This is the first Metric3D prior plumbing commit. It does not generate priors itself; if `mono_depths` files are absent, the trainer logs missing priors and skips the depth term for those views.
+- Full final-round parity also needs AnySplat feed-forward Gaussian initialization, which belongs in an offline preparation step rather than inside the timed training loop.
+
 ## fastergsfusedrapid-v0.3.14 - 2026-05-11
 
 Implementation/config changes:
