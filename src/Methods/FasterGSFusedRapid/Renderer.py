@@ -70,6 +70,17 @@ class FasterGSFusedRapidRenderer(BaseRenderer):
             raise Framework.RendererError('FasterGSFusedRapid renderer not implemented in CPU mode')
         if len(Framework.config.GLOBAL.GPU_INDICES) > 1:
             Logger.log_warning(f'FasterGSFusedRapid renderer not implemented in multi-GPU mode: using GPU {Framework.config.GLOBAL.GPU_INDICES[0]}')
+        self._empty_float: torch.Tensor | None = None
+        self._empty_bool: torch.Tensor | None = None
+
+    def _empty_tensor(self, dtype: torch.dtype) -> torch.Tensor:
+        cache_name = '_empty_bool' if dtype == torch.bool else '_empty_float'
+        empty = getattr(self, cache_name)
+        device = self.model.gaussians.means.device
+        if empty is None or empty.device != device:
+            empty = torch.empty(0, dtype=dtype, device=device)
+            setattr(self, cache_name, empty)
+        return empty
 
     def render_image(self, view: View, to_chw: bool = False, benchmark: bool = False) -> dict[str, torch.Tensor]:
         """Renders an image for a given view."""
@@ -94,7 +105,8 @@ class FasterGSFusedRapidRenderer(BaseRenderer):
             sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             moments_sh_coefficients_rest=self.model.gaussians.moments_sh_coefficients_rest,
             autograd_dummy=autograd_dummy,
-            densification_info=self.model.gaussians.densification_info if update_densification_info else torch.empty(0),
+            densification_info=self.model.gaussians.densification_info if update_densification_info else self._empty_tensor(torch.float32),
+            metric_map=self._empty_tensor(torch.bool),
             rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, bg_color, self.model.gaussians.lr_means, adam_step_count),
         )
         return image, autograd_dummy
@@ -109,6 +121,7 @@ class FasterGSFusedRapidRenderer(BaseRenderer):
             opacities=self.model.gaussians.raw_opacities,
             sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
             sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
+            metric_map=self._empty_tensor(torch.bool),
             rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, view.camera.background_color if bg_color is None else bg_color, 0.0, 0),
         )
         return image
@@ -139,6 +152,7 @@ class FasterGSFusedRapidRenderer(BaseRenderer):
             opacities=self.model.gaussians.raw_opacities,
             sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
             sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
+            metric_map=self._empty_tensor(torch.bool),
             rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, view.camera.background_color, 0.0, 0),
         )
         image = image.clamp(0.0, 1.0)

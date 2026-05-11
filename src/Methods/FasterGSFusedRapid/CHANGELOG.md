@@ -1,5 +1,49 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.3.14 - 2026-05-11
+
+Implementation/config changes:
+
+- Cached renderer-owned empty sentinel tensors for `metric_map=None` and inactive `densification_info` paths.
+- Training renders now pass a cached empty bool metric map instead of letting the Python binding allocate one per call.
+- Post-densification training renders now pass a cached empty float tensor instead of constructing `torch.empty(0)` per call.
+- No-grad score and inference renders also reuse the cached empty bool metric map when no metric counts are requested.
+- The C++ wrappers now use the metric-map pointer directly after validating non-empty maps as contiguous CUDA bool tensors, avoiding a redundant `.contiguous()` wrapper on score/prune metric-count renders.
+- The Python binding keeps cached empty fallback tensors for direct calls that bypass the renderer-level sentinel cache.
+- Added `configs/fastergsfusedrapid_v0_3_14_cached_empty_tensors/bicycle.yaml`, copied from v0.3.13 with only experiment metadata changed.
+
+Expected use:
+
+```bash
+python ./scripts/benchmark_360v2.py \
+  -m FasterGSFusedRapid \
+  --config-dir configs/fastergsfusedrapid_v0_3_14_cached_empty_tensors \
+  --repeats 1 \
+  --suite-name fastergsfusedrapid_v0_3_14_cached_empty_tensors_bicycle \
+  --scenes bicycle
+```
+
+Experiment:
+
+| version | scene | train time | n_gaussians | PSNR | SSIM | LPIPS | peak allocated VRAM |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fastergsfusedrapid-v0.3.14 | bicycle | 182.59s | 1,246,630 | 25.6324 | 0.7582 | 0.2941 | 4.63GiB |
+
+Profiler windows:
+
+| window | n_gaussians | render ms | loss ms | backward ms | densify/prune ms | optimizer ms | total ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1000-1100 | 113,630 -> 138,586 | 0.6763 | 0.4625 | 1.2206 | 0.2852 | 0.0000 | 2.6447 |
+| 14000-14100 | 1,356,005 -> 1,356,015 | 0.9711 | 0.4545 | 4.1219 | 0.3466 | 0.0000 | 5.8941 |
+| 25000-25100 | 1,250,318 -> 1,250,318 | 1.0257 | 0.4599 | 3.9057 | 0.0000 | 0.0000 | 5.3913 |
+
+Interpretation:
+
+- This is a Python/CUDA boundary cleanup: it removes repeated zero-size tensor allocations and redundant metric-map contiguous wrappers without changing the CUDA kernels or FastGS/RapidGS density, pruning, and rendering semantics.
+- Expected impact is mostly outside kernel math and should show up as small end-to-end train-time or wrapper-overhead changes.
+- Single-run train time was slower than v0.3.13 (`181.95s -> 182.59s`), while quality and Gaussian count stayed normal.
+- The measured profiler windows improved in early/mid render and densify/prune setup (`14000-14100` total `5.9593ms -> 5.8941ms`) but regressed in the late backward-heavy window. Treat this as a small wrapper cleanup with noisy end-to-end timing, not as a proven speedup.
+
 ## fastergsfusedrapid-v0.3.13 - 2026-05-11
 
 Implementation/config changes:

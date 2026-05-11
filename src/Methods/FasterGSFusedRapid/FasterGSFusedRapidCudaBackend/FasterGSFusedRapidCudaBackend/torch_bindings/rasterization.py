@@ -5,6 +5,19 @@ from torch.autograd.function import once_differentiable
 from FasterGSFusedRapidCudaBackend import _C
 
 
+_EMPTY_CPU = torch.empty(0)
+_EMPTY_BOOL_BY_DEVICE: dict[torch.device, torch.Tensor] = {}
+
+
+def _empty_bool_like(tensor: torch.Tensor) -> torch.Tensor:
+    device = tensor.device
+    empty = _EMPTY_BOOL_BY_DEVICE.get(device)
+    if empty is None:
+        empty = torch.empty(0, dtype=torch.bool, device=device)
+        _EMPTY_BOOL_BY_DEVICE[device] = empty
+    return empty
+
+
 class RasterizerSettings(NamedTuple):
     w2c: torch.Tensor  # affine transformation from model/world space to view space
     cam_position: torch.Tensor  # camera position in world space
@@ -188,14 +201,14 @@ def diff_rasterize(
         opacities,
         sh_coefficients_0,
         sh_coefficients_rest,
-        torch.empty(0) if moments_means is None else moments_means,
-        torch.empty(0) if moments_scales is None else moments_scales,
-        torch.empty(0) if moments_rotations is None else moments_rotations,
-        torch.empty(0) if moments_opacities is None else moments_opacities,
-        torch.empty(0) if moments_sh_coefficients_0 is None else moments_sh_coefficients_0,
-        torch.empty(0) if moments_sh_coefficients_rest is None else moments_sh_coefficients_rest,
+        _EMPTY_CPU if moments_means is None else moments_means,
+        _EMPTY_CPU if moments_scales is None else moments_scales,
+        _EMPTY_CPU if moments_rotations is None else moments_rotations,
+        _EMPTY_CPU if moments_opacities is None else moments_opacities,
+        _EMPTY_CPU if moments_sh_coefficients_0 is None else moments_sh_coefficients_0,
+        _EMPTY_CPU if moments_sh_coefficients_rest is None else moments_sh_coefficients_rest,
         densification_info,
-        torch.empty(0, dtype=torch.bool, device=means.device) if metric_map is None else metric_map,
+        _empty_bool_like(means) if metric_map is None else metric_map,
         rasterizer_settings,
     )
     if return_metric_counts:
@@ -225,7 +238,7 @@ def rasterize_forward(
         opacities,
         sh_coefficients_0,
         sh_coefficients_rest,
-        torch.empty(0, dtype=torch.bool, device=means.device) if metric_map is None else metric_map,
+        _empty_bool_like(means) if metric_map is None else metric_map,
         *rasterizer_settings.as_tuple(),
     )
     if return_metric_counts:
