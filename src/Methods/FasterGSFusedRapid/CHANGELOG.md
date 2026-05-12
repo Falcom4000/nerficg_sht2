@@ -1,5 +1,42 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.16 - 2026-05-12
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_16_early_vcp_thr085_18k/*.yaml`, copied from v0.4.15.
+- Kept the v0.4.15 early-VCP schedule.
+- Lowered `FASTGS_PRUNING_SCORE_THRESHOLD` from `0.90` to `0.85`.
+
+Verification:
+
+- Benchmark: `python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_16_early_vcp_thr085_18k --repeats 3 --suite-name fastergsfusedrapid_v0_4_16_early_vcp_thr085_18k_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_16_early_vcp_thr085_18k_r3`.
+
+| scene | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 135.3011s | 25.3316 | 0.7455 | 0.2973 | 1,476,212 | 4.8871GiB |
+| bonsai | 84.1471s | 31.3469 | 0.9358 | 0.2583 | 402,584 | 5.7147GiB |
+| counter | 79.5713s | 28.4842 | 0.8953 | 0.2835 | 269,207 | 4.9929GiB |
+| garden | 91.6254s | 26.7494 | 0.8346 | 0.1903 | 859,871 | 2.9968GiB |
+| kitchen | 92.9259s | 30.8168 | 0.9188 | 0.1746 | 392,020 | 5.5863GiB |
+| room | 81.9755s | 31.3308 | 0.9128 | 0.3047 | 351,185 | 6.0449GiB |
+| stump | 93.7970s | 25.8205 | 0.7278 | 0.3015 | 1,173,506 | 2.5766GiB |
+| mean | 94.1919s | 28.5543 | 0.8530 | 0.2586 | 703,512 | 4.6856GiB |
+
+Compared with v0.4.15:
+
+| version | mean train | mean PSNR | mean SSIM | mean LPIPS | mean n_gaussians | mean VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v0.4.15 | 94.1958s | 28.5681 | 0.8529 | 0.2586 | 702,535 | 4.6845GiB |
+| v0.4.16 | 94.1919s | 28.5543 | 0.8530 | 0.2586 | 703,512 | 4.6856GiB |
+
+Interpretation:
+
+- Lowering the VCP pruning score threshold to `0.85` is effectively neutral for speed and model size.
+- Mean train time improved by only `0.0039s` from v0.4.15, while PSNR dropped by `0.0138`.
+- Do not keep threshold `0.85` as the preferred direction; the next experiment returns to `0.90` and tests a shorter 17k schedule with active VCP.
+
 ## fastergsfusedrapid-v0.4.15 - 2026-05-12
 
 Config changes:
