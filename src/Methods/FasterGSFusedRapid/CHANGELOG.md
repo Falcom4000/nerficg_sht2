@@ -1,5 +1,45 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.20 - 2026-05-12
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_20_no_vcp_16k/*.yaml`, copied from v0.4.14.
+- Reduced `TRAINING.NUM_ITERATIONS` from `18000` to `16000`.
+- Kept v0.4.14 densification semantics: `DENSIFICATION_END_ITERATION=14900`.
+- Kept VCP effectively inactive under the 16k schedule: `FASTGS_PRUNING_START_ITERATION=18000`.
+- This is a control run against v0.4.19 to test whether active early VCP is worth its score-render overhead at 16k.
+
+Verification:
+
+- Benchmark: `python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_20_no_vcp_16k --repeats 3 --suite-name fastergsfusedrapid_v0_4_20_no_vcp_16k_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_20_no_vcp_16k_r3`.
+
+| scene | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 123.3942s | 25.2777 | 0.7424 | 0.3012 | 1,532,902 | 4.8944GiB |
+| bonsai | 77.6984s | 31.2630 | 0.9352 | 0.2605 | 422,714 | 5.7147GiB |
+| counter | 73.3364s | 28.3627 | 0.8932 | 0.2865 | 280,873 | 4.9929GiB |
+| garden | 82.7212s | 26.7825 | 0.8335 | 0.1939 | 882,716 | 2.9944GiB |
+| kitchen | 85.0958s | 30.5272 | 0.9161 | 0.1789 | 410,736 | 5.5863GiB |
+| room | 74.9172s | 31.1224 | 0.9117 | 0.3079 | 374,416 | 6.0448GiB |
+| stump | 83.9004s | 25.8663 | 0.7277 | 0.3043 | 1,208,829 | 2.5754GiB |
+| mean | 85.8662s | 28.4574 | 0.8514 | 0.2619 | 730,455 | 4.6861GiB |
+
+Compared with v0.4.19:
+
+| version | mean train | mean PSNR | mean SSIM | mean LPIPS | mean n_gaussians | mean VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v0.4.19 early VCP 16k | 84.9014s | 28.4671 | 0.8514 | 0.2612 | 697,606 | 4.6853GiB |
+| v0.4.20 no VCP 16k | 85.8662s | 28.4574 | 0.8514 | 0.2619 | 730,455 | 4.6861GiB |
+
+Interpretation:
+
+- Removing active early VCP at 16k is worse than v0.4.19: mean train time is `0.9648s` slower, mean PSNR is `0.0097` lower, and LPIPS is `0.0007` worse.
+- Final Gaussian count rises by about `32.8k`, confirming that early VCP is still useful at the shorter 16k budget despite score-render overhead.
+- Keep active early VCP as the preferred direction for sub-17k schedules.
+- Next config target: probe a 15.5k active early-VCP schedule to find the lower budget boundary.
+
 ## fastergsfusedrapid-v0.4.19 - 2026-05-12
 
 Config changes:
