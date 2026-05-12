@@ -804,6 +804,176 @@ loss.backward()
 因此，当前版本的 `backward_ms` 实际包含了大部分原本属于 backward 和 optimizer
 的成本。
 
+### 8.1 CUDA backward/optimizer 的调用链
+
+结论先写清楚：**训练时 Gaussian 参数的 backward 和 Adam optimizer 都在 CUDA
+后端里执行**。Python 侧没有常规的 `torch.optim.Adam.step()`。
+
+训练 iteration 的实际链路是：
+
+```mermaid
+flowchart LR
+    A[Trainer.training_iteration] --> B[renderer.render_image_training]
+    B --> C[diff_rasterize autograd Function]
+    C --> D[_C.forward]
+    D --> E[loss = RGB loss + dummy]
+    E --> F[loss.backward]
+    F --> G[_Rasterize.backward]
+    G --> H[_C.backward]
+    H --> I[blend_backward_cu]
+    I --> J[preprocess_backward_cu + Adam update for visible Gaussians]
+    J --> K[adam_step_invisible for invisible Gaussians]
+```
+
+关键代码位置：
+
+| 位置 | 作用 |
+| --- | --- |
+| `Trainer.py::training_iteration` | 调 `loss.backward()`，不调 `optimizer.step()` |
+| `torch_bindings/rasterization.py::_Rasterize.backward` | PyTorch autograd 入口，只把 `grad_image` 和 saved CUDA buffers 交给 `_C.backward` |
+| `rasterization/src/backward.cu::backward` | host 端调度 CUDA backward 和 fused Adam kernels |
+| `kernels_backward.cuh::blend_backward_cu` | 从 RGB loss 回传到 `grad_mean2d/grad_conic/grad_opacity/grad_color` |
+| `kernels_backward.cuh::preprocess_backward_cu` | 从 2D/SH/covariance 梯度回传到 raw Gaussian 参数，并直接做 Adam update |
+| `kernel_utils.cuh::adam_step_helper` | 可见 Gaussian 的逐元素 Adam 更新 |
+| `kernels_backward.cuh::adam_step_invisible` | 不可见 Gaussian 的 Adam moment decay/update |
+
+Python autograd 在这里的角色很薄：它只负责把 `loss.backward()` 接到
+`_Rasterize.backward`，然后 `_Rasterize.backward` 返回全 `None`。也就是说，
+Gaussian 参数没有走 PyTorch `.grad` 张量和 PyTorch optimizer；参数 tensor 和
+moment tensor 是被 CUDA kernel 原地更新的。
+
+### 8.2 fused Adam 的状态存储在哪里
+
+当前模型为每类 Gaussian 参数维护一组 CUDA tensor，最后一维大小为 2，表示 Adam
+的一阶/二阶 moment：
+
+| 参数 | 参数 tensor | moment tensor |
+| --- | --- | --- |
+| mean | `_means` | `moments_means` |
+| SH degree-0 | `_sh_coefficients_0` | `moments_sh_coefficients_0` |
+| SH rest | `_sh_coefficients_rest` | `moments_sh_coefficients_rest` |
+| scale | `_scales` | `moments_scales` |
+| rotation | `_rotations` | `moments_rotations` |
+| opacity | `_opacities` | `moments_opacities` |
+
+这些 moment 在 `Model.py::_set_gaussian_tensors` 里用 CUDA tensor 初始化：
+
+```python
+self.moments_means = torch.zeros(*self.means.shape, 2, dtype=torch.float32, device='cuda')
+self.moments_scales = torch.zeros(*self._scales.shape, 2, dtype=torch.float32, device='cuda')
+...
+```
+
+density control 会改变 Gaussian 数量，所以 Python 仍然要维护这些 optimizer state
+的结构一致性：
+
+- prune 时按 `valid_mask` 同步裁剪参数和 moments；
+- sort 时按 Morton/order 同步重排参数和 moments；
+- clone/split 新增 Gaussian 时，为新 Gaussian 拼接零初始化 moments；
+- opacity reset 时不仅 clamp opacity，也清零 `moments_opacities`。
+
+这部分不是 PyTorch optimizer step，而是数据结构维护。真正的数值更新仍在 CUDA。
+
+### 8.3 可见 Gaussian 的 Adam 更新
+
+`preprocess_backward_cu` 默认一个线程处理一个可见 Gaussian。它先检查：
+
+```cpp
+if (primitive_idx >= n_primitives || primitive_n_touched_tiles[primitive_idx] == 0) return;
+```
+
+也就是说，只有当前 view 里实际触达 tile 的 Gaussian 进入完整 backward。这个
+kernel 里做三类事情：
+
+1. 从 `blend_backward_cu` 累积出的 2D 梯度恢复到 3D Gaussian 参数梯度；
+2. 处理 SH color backward；
+3. 对 raw 参数直接调用 `adam_step_helper` 原地更新。
+
+`adam_step_helper` 的核心逻辑是标准 Adam 形式：
+
+```cpp
+moment1 = beta1 * moment1 + (1 - beta1) * grad
+moment2 = beta2 * moment2 + (1 - beta2) * grad * grad
+param  -= step_size * moment1 / (sqrt(moment2) / sqrt(1 - beta2^t) + eps)
+```
+
+当前代码写成 fused multiply-add 形式：
+
+```cpp
+const float moment1 = fmaf(config::beta1, moment.x - grad, grad);
+const float moment2 = fmaf(config::beta2, moment.y - grad_sq, grad_sq);
+const float denom = sqrtf(moment2) * bias_correction2_sqrt_rcp + config::epsilon;
+param[element_idx] -= step_size * moment1 / denom;
+moments[element_idx] = make_float2(moment1, moment2);
+```
+
+其中 `step_size` 已经在 host 端乘过 `bias_correction1_rcp`：
+
+```cpp
+step_size_means = current_mean_lr * bias_correction1_rcp
+step_size_scales = lr_scales * bias_correction1_rcp
+...
+```
+
+所以最终等价于 Adam 的 bias-corrected update。
+
+可见 Gaussian 的各参数更新位置：
+
+| 参数 | 梯度来源 | CUDA 更新位置 |
+| --- | --- | --- |
+| opacity | `blend_backward_cu` 的 alpha 梯度，再乘 sigmoid derivative | `preprocess_backward_cu` 开头直接 `adam_step_helper<1, 0>` |
+| mean | splatting mean2d 梯度 + SH color 对 mean 的梯度 | `adam_step_helper<3, 0/1/2>` |
+| scale | conic/covariance 梯度回传到 raw log-scale | `adam_step_helper<3, 0/1/2>` |
+| rotation | covariance 梯度回传到 quaternion | `adam_step_helper<4, 0/1/2/3>` |
+| SH degree-0/rest | color 梯度 | `convert_sh_to_color_backward` 内部使用 moments 做 fused update |
+
+这也是 profiler 里 `optimizer_ms = 0` 的原因：optimizer 没有单独 Python 阶段，
+被包含在 `loss.backward()` 对应的 CUDA backward 时间里。
+
+### 8.4 不可见 Gaussian 也会更新 optimizer state
+
+一个容易漏掉的细节是：不可见 Gaussian 没有当前 view 的新梯度，但 Adam state
+仍需要按 Adam 语义衰减。当前代码用 `adam_step_invisible` 单独处理：
+
+```cpp
+if (idx >= n_elements || primitive_n_touched_tiles[primitive_idx] != 0) return;
+new_moments = moments[idx] * (beta1, beta2);
+param[idx] -= step_size * new_moments.x / (sqrt(new_moments.y) * bias_correction2_sqrt_rcp + eps);
+moments[idx] = new_moments;
+```
+
+host 端会对各参数分别 launch：
+
+- `adam_step_invisible<3>` for means；
+- `adam_step_invisible<3>` for scales；
+- `adam_step_invisible<4>` for rotations；
+- `adam_step_invisible<1>` for opacities；
+- `adam_step_invisible<3>` for SH degree-0；
+- 如果 active SH bases > 1，再对 SH rest launch
+  `adam_step_invisible<elements_per_primitive_sh_coefficients_rest>`。
+
+这样做保持了 fused optimizer 与 Adam step count 的一致性：即使某个 Gaussian
+当前视角不可见，它的 moment decay 仍随全局 step 推进。
+
+### 8.5 CUDA 里还承担哪些训练语义
+
+除 forward rasterization 外，CUDA backend 当前还承担这些训练语义：
+
+| CUDA 子系统 | 当前职责 | 是否仍存在 |
+| --- | --- | --- |
+| raw activation | `sigmoid(opacity)`、`exp(scale)`、quaternion normalize 相关计算 | 是 |
+| projection/covariance backward | 从 RGB loss 回传到 mean/scale/rotation/opacity/SH | 是 |
+| fused Adam | 直接更新参数和 moment tensors | 是 |
+| invisible Adam decay/update | 对当前 view 不可见 Gaussian 更新 moments/params | 是 |
+| densification info | 可选累积 count、mean2d grad norm、abs grad norm | 是 |
+| FastGS metric counts | score render 时按高误差 pixel 统计 Gaussian contribution | 是 |
+| depth/inverse-depth | Metric3D/depth supervision 相关输出和梯度 | 已删除 |
+
+所以，如果问“CUDA 的部分还剩东西吗”，答案是：**主要训练内核都还在 CUDA**。
+已删除的是 depth/inverse-depth supervision 分支；没有删除的是 RGB forward、
+bucket backward、projection/covariance/SH backward、fused Adam optimizer、
+densification info 和 FastGS score 统计。
+
 ## 9. Densification 信息收集
 
 ### 原版 3DGS
