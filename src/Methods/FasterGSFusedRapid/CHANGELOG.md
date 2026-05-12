@@ -1,5 +1,45 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.18 - 2026-05-12
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_18_early_vcp_16500/*.yaml`, copied from v0.4.17.
+- Reduced `TRAINING.NUM_ITERATIONS` from `17000` to `16500`.
+- Moved `DENSIFICATION_END_ITERATION` from `14000` to `13500`.
+- Moved `MORTON_ORDERING_END_ITERATION` from `14000` to `13500`.
+- Moved active VCP pruning to `14000/15000/16000` with `FASTGS_PRUNING_START_ITERATION=14000`, `FASTGS_PRUNING_END_ITERATION=16500`, and `FASTGS_PRUNING_INTERVAL=1000`.
+
+Verification:
+
+- Benchmark: `python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_18_early_vcp_16500 --repeats 3 --suite-name fastergsfusedrapid_v0_4_18_early_vcp_16500_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_18_early_vcp_16500_r3`.
+
+| scene | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 125.5554s | 25.2803 | 0.7437 | 0.3007 | 1,456,618 | 4.8854GiB |
+| bonsai | 79.2740s | 31.2558 | 0.9356 | 0.2598 | 403,330 | 5.7147GiB |
+| counter | 74.7550s | 28.4179 | 0.8936 | 0.2855 | 269,838 | 4.9929GiB |
+| garden | 84.1773s | 26.7326 | 0.8326 | 0.1918 | 857,749 | 2.9972GiB |
+| kitchen | 86.8208s | 30.7528 | 0.9173 | 0.1768 | 391,781 | 5.5863GiB |
+| room | 77.5607s | 31.1544 | 0.9110 | 0.3072 | 348,298 | 6.0448GiB |
+| stump | 85.8139s | 25.8267 | 0.7275 | 0.3035 | 1,161,103 | 2.5734GiB |
+| mean | 87.7081s | 28.4887 | 0.8516 | 0.2608 | 698,388 | 4.6850GiB |
+
+Compared with v0.4.17:
+
+| version | mean train | mean PSNR | mean SSIM | mean LPIPS | mean n_gaussians | mean VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v0.4.17 | 90.0282s | 28.5336 | 0.8526 | 0.2598 | 700,100 | 4.6845GiB |
+| v0.4.18 | 87.7081s | 28.4887 | 0.8516 | 0.2608 | 698,388 | 4.6850GiB |
+
+Interpretation:
+
+- The 16.5k schedule improves mean train time by another `2.3200s` over v0.4.17 and `6.6321s` over v0.4.14.
+- Quality degradation is now visible but still moderate: PSNR `-0.0449`, SSIM `-0.0010`, LPIPS `+0.0010` versus v0.4.17.
+- Final Gaussian count remains close to v0.4.17; the speedup primarily comes from the shorter schedule.
+- Next config target: test a 16k schedule to locate the lower budget boundary before quality drops too far.
+
 ## fastergsfusedrapid-v0.4.17 - 2026-05-12
 
 Config changes:
