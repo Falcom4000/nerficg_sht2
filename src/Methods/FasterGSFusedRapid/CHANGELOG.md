@@ -1,5 +1,48 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.27 - 2026-05-12
+
+Code changes:
+
+- Guarded the per-iteration `self.model.train()`, `dataset.train()`, and `self.loss.train()` calls in `Trainer.py`.
+- The trainer now restores training mode only if a logging/evaluation callback changed the mode.
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_27_mode_guard_17k/*.yaml`, copied from v0.4.23.
+- Kept all training, densification, Morton ordering, VCP, AnySplat, and optimizer hyperparameters unchanged.
+
+Motivation:
+
+- v0.4.23 is the current strict-quality baseline, and tail-step compression in v0.4.25/v0.4.26 exceeded the `0.01dB` PSNR budget.
+- This version targets repeated Python-side fixed overhead without changing training math, sampling, pruning, or Gaussian-count semantics.
+
+Verification:
+
+- `/usr/local/miniconda3/envs/nerficg/bin/python -m py_compile src/Methods/FasterGSFusedRapid/Trainer.py`
+- Full 7-scene repeat-3 benchmark:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_27_mode_guard_17k --repeats 3 --suite-name fastergsfusedrapid_v0_4_27_mode_guard_17k_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_27_mode_guard_17k_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 128.6260s | 25.3048 | 0.7445 | 0.2986 | 1,487,781 | 4.8854GiB |
+| bonsai | 3 | 80.1424s | 31.3892 | 0.9359 | 0.2584 | 415,942 | 5.7162GiB |
+| counter | 3 | 75.1735s | 28.4775 | 0.8948 | 0.2838 | 275,784 | 4.9943GiB |
+| garden | 3 | 85.8718s | 26.8007 | 0.8345 | 0.1913 | 869,590 | 2.9992GiB |
+| kitchen | 3 | 87.9542s | 30.8605 | 0.9186 | 0.1754 | 401,387 | 5.5879GiB |
+| room | 3 | 77.7407s | 31.3314 | 0.9121 | 0.3061 | 358,345 | 6.0463GiB |
+| stump | 3 | 87.4527s | 25.8445 | 0.7280 | 0.3025 | 1,184,338 | 2.5741GiB |
+| mean | 21 | 88.9945s | 28.5726 | 0.8526 | 0.2595 | 713,310 | 4.6862GiB |
+
+Interpretation:
+
+- v0.4.27 is faster than v0.4.23 (`88.99s` vs `89.70s`) and improves mean PSNR (`28.5726` vs `28.5601`).
+- The code change is semantically neutral: training mode is still restored whenever an eval/logging callback changes it, but the normal hot loop skips redundant module/dataset mode setters.
+- Promote v0.4.27 as the new strict-quality baseline. Future speed experiments should use `28.5726 - 0.01 = 28.5626` PSNR as the quality floor unless an even better baseline replaces it.
+
 ## fastergsfusedrapid-v0.4.26 - 2026-05-12
 
 Config changes:

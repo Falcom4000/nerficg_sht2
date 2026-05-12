@@ -329,10 +329,13 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
             profile_events = [torch.cuda.Event(enable_timing=True) for _ in range(4)]
             profile_events[0].record()
             self._record_profile_gaussian_count(profile_window)
-        # init modes
-        self.model.train()
-        dataset.train()
-        self.loss.train()
+        # Training modes usually stay unchanged; restore them only after eval/logging callbacks.
+        if not self.model.training:
+            self.model.train()
+        if dataset.mode != 'train':
+            dataset.train()
+        if not self.loss.training:
+            self.loss.train()
         # update learning rate
         optimization_step = iteration + 1
         self.model.gaussians.update_learning_rate(optimization_step)
