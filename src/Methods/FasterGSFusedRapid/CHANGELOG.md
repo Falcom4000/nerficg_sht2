@@ -18,7 +18,26 @@ Motivation:
 Verification:
 
 - Full 7-scene repeat-3 benchmark started with `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_24_15k_meanlr15k --repeats 3 --suite-name fastergsfusedrapid_v0_4_24_15k_meanlr15k_r3`.
-- Results pending at the time of this commit.
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_24_15k_meanlr15k_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 115.8190s | 25.2884 | 0.7406 | 0.3044 | 1,429,952 | 4.8981GiB |
+| bonsai | 3 | 73.9441s | 31.0869 | 0.9340 | 0.2637 | 407,395 | 5.7162GiB |
+| counter | 3 | 68.6883s | 28.2707 | 0.8933 | 0.2869 | 270,014 | 4.9942GiB |
+| garden | 3 | 75.7736s | 26.6521 | 0.8283 | 0.2024 | 864,620 | 2.9917GiB |
+| kitchen | 3 | 79.6852s | 30.7409 | 0.9191 | 0.1747 | 419,707 | 5.5879GiB |
+| room | 3 | 71.7122s | 30.9968 | 0.9108 | 0.3093 | 354,513 | 6.0464GiB |
+| stump | 3 | 77.6459s | 25.7364 | 0.7198 | 0.3104 | 1,164,162 | 2.5948GiB |
+| mean | 21 | 80.4669s | 28.3960 | 0.8494 | 0.2646 | 701,480 | 4.6899GiB |
+
+Interpretation:
+
+- Shortening the mean-position LR decay horizon from 30k to 15k slightly improves the 15k speed/quality point relative to v0.4.22 (`80.47s` vs `80.82s`, `28.3960` vs `28.3757` PSNR).
+- The improvement is not enough to replace v0.4.17 as the quality-preserving paper baseline; v0.4.24 is still about `0.138dB` below v0.4.17.
+- Keep v0.4.24 as the best current 80s-class short-schedule variant, not as the main baseline.
 
 ## fastergsfusedrapid-v0.4.23 - 2026-05-12
 
