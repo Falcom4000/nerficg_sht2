@@ -2747,6 +2747,7 @@ MORTON_ORDERING_END_ITERATION: 15000
 | v0.4.26 | v0.4.23 schedule 只把尾部从 17k 压到 16.925k | mean train `88.90s`，PSNR `28.5233`，相对 v0.4.23 低 `0.0368dB`，仍超过 `0.01dB` 预算，淘汰 |
 | v0.4.27 | v0.4.23 schedule + per-iteration training-mode guard | mean train `88.99s`，PSNR `28.5726`，速度和质量都优于 v0.4.23，提升为新严格质量基线 |
 | v0.4.28 | v0.4.27 + direct loss fast path local experiment | mean train `88.62s`，PSNR `28.5431`，低于 v0.4.27 新门槛 `28.5626`，代码回退、不保留 |
+| v0.4.29 | v0.4.27 + cached FastGS score-view list local experiment | mean train `89.09s`，PSNR `28.5530`，低于 v0.4.27 新门槛且速度更慢，代码回退、不保留 |
 
 因此，后续论文主表可以根据叙事选择 v0.4.17 或 v0.4.27：v0.4.17 是更直接的
 schedule/pruning baseline，v0.4.27 是当前严格质量门槛下的最佳实现基线。v0.4.19-v0.4.22
@@ -2764,6 +2765,7 @@ v0.4.23 说明 conservative VCP 可以稳住质量，但它主要通过少删来
 - v0.4.25/v0.4.26 说明在 v0.4.23 这个严格质量基线下，继续压缩最后 tail step 的收益很小且不稳定，会超过 `0.01dB` 质量预算；
 - v0.4.27 说明在不改采样、loss、densification、VCP 和 optimizer 语义的前提下，减少 hot loop 里的重复 mode setter 可以得到小幅但可靠的端到端收益；
 - v0.4.28 说明即使是理论上等价的 Python loss 快路径，也必须用全场景 repeat=3 质量门槛筛选；该实验速度略好但未过线，因此不进入主线；
+- v0.4.29 说明 densification/VCP 侧的小型 Python 缓存没有形成有效收益，并且在严格门槛下不应保留；
 - 把这些版本放在 trade-off 表中，比把最快版本当默认 baseline 更严谨。
 
 ## 11. 实验及其结论
@@ -2836,6 +2838,7 @@ v0.4.25 和 v0.4.26 尝试只缩短最后 tail step，结果如下：
 | v0.4.26 | 88.8976s | 28.5233 | -0.0368 | 速度收益更小且仍超预算，淘汰 |
 | v0.4.27 | 88.9945s | 28.5726 | +0.0125 | 速度和质量都优于 v0.4.23，提升为新基线 |
 | v0.4.28 | 88.6177s | 28.5431 | -0.0170 | 相对 v0.4.27 新门槛不合格，回退代码 |
+| v0.4.29 | 89.0913s | 28.5530 | -0.0072 | 相对 v0.4.27 新门槛不合格且更慢，回退代码 |
 
 v0.4.27 的改动不改变 CUDA rasterizer、loss、采样序列、densification、Clone/Split、
 Pruning、Morton 排序或 optimizer 更新。它只把每步都会执行的

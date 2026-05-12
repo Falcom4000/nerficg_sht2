@@ -1,5 +1,51 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.29 rejected local experiment - 2026-05-12
+
+Tested code changes:
+
+- Cached the immutable training-view list used by FastGS score and metric-count renders.
+- `_sample_score_views()` now samples from the cached list instead of rebuilding `list(dataset.train())` on every densification/VCP callback.
+- Reverted this code path after benchmark because it did not pass the strict PSNR gate and was not faster.
+
+Local config:
+
+- Tested with local `configs/fastergsfusedrapid_v0_4_29_cached_score_views_17k/*.yaml`, copied from v0.4.27.
+- Kept all training, densification, Morton ordering, VCP, AnySplat, and optimizer hyperparameters unchanged.
+- The local config directory is not retained in git because the code change was rejected.
+
+Motivation:
+
+- v0.4.27 is the current strict-quality baseline with quality floor `28.5626` PSNR.
+- Densification and VCP repeatedly need a random subset of the same training views; rebuilding the Python list every time is fixed overhead outside the CUDA math.
+- This preserves the same `random.sample` distribution over the same view objects while avoiding repeated dataset mode/list work.
+
+Verification:
+
+- `/usr/local/miniconda3/envs/nerficg/bin/python -m py_compile src/Methods/FasterGSFusedRapid/Trainer.py`
+- Full 7-scene repeat-3 benchmark:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_29_cached_score_views_17k --repeats 3 --suite-name fastergsfusedrapid_v0_4_29_cached_score_views_17k_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_29_cached_score_views_17k_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 128.1101s | 25.3128 | 0.7444 | 0.2988 | 1,494,273 | 4.8928GiB |
+| bonsai | 3 | 80.4770s | 31.3924 | 0.9359 | 0.2586 | 414,585 | 5.7162GiB |
+| counter | 3 | 75.8170s | 28.4647 | 0.8948 | 0.2839 | 275,567 | 4.9944GiB |
+| garden | 3 | 85.8699s | 26.8401 | 0.8349 | 0.1907 | 870,646 | 2.9978GiB |
+| kitchen | 3 | 87.9186s | 30.7899 | 0.9182 | 0.1757 | 402,091 | 5.5879GiB |
+| room | 3 | 77.7886s | 31.2312 | 0.9116 | 0.3054 | 361,078 | 6.0463GiB |
+| stump | 3 | 87.6576s | 25.8396 | 0.7281 | 0.3020 | 1,190,524 | 2.5786GiB |
+| mean | 21 | 89.0913s | 28.5530 | 0.8526 | 0.2593 | 715,538 | 4.6877GiB |
+
+Interpretation:
+
+- v0.4.29 is slower than v0.4.27 (`89.09s` vs `88.99s`) and falls below the new strict quality floor (`28.5530 < 28.5626` PSNR).
+- Do not promote v0.4.29 and do not keep the cached score-view code path.
+- Keep v0.4.27 as the current strict-quality baseline.
+
 ## fastergsfusedrapid-v0.4.28 rejected local experiment - 2026-05-12
 
 Tested code changes:
