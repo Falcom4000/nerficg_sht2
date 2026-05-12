@@ -521,6 +521,252 @@ TRAINING:
 这部分主要改变的是执行效率和额外统计输出，不改变最终 RGB alpha blending 的
 基本目标。
 
+### 7.1 CUDA forward 的实际执行流水线
+
+当前训练 forward 不是一个单独的“大 rasterize kernel”，而是一串更细的
+GPU/CUB 操作。入口在
+`src/Methods/FasterGSFusedRapid/FasterGSFusedRapidCudaBackend/FasterGSFusedRapidCudaBackend/rasterization/src/forward.cu`。
+
+```mermaid
+flowchart LR
+    A[Gaussian raw params] --> B[preprocess_cu]
+    B --> C[visible primitive list]
+    B --> D[n_touched_tiles / n_instances]
+    C --> E[CUB depth sort]
+    E --> F[apply_depth_ordering_cu]
+    F --> G[CUB prefix sum offsets]
+    G --> H[create_instances_cu]
+    H --> I[CUB tile-key sort]
+    I --> J[extract_instance_ranges_cu]
+    J --> K[extract_bucket_counts]
+    K --> L[CUB bucket prefix sum]
+    L --> M[blend_cu]
+    M --> N[RGB image]
+    M --> O[backward buffers]
+```
+
+和原版 3DGS 相比，关键差别不只是“用 CUDA 写了 rasterizer”，而是把
+forward 拆成了适合 GPU 并行的几个阶段：
+
+相关代码定位：
+
+| 代码位置 | 主要内容 |
+| --- | --- |
+| `rasterization/src/forward.cu::forward` | forward host 端调度：preprocess、CUB sort/scan、instance 生成、tile range、bucket buffer、blend |
+| `rasterization/include/kernels_forward.cuh::preprocess_cu` | projection、covariance、opacity/covariance/depth culling、精确 touched tile 计数 |
+| `rasterization/include/kernel_utils.cuh::compute_exact_n_touched_tiles` | warp 协作统计一个 Gaussian 真实贡献的 tile 数 |
+| `rasterization/include/kernels_forward.cuh::create_instances_cu` | warp 协作写 compact Gaussian-tile instances |
+| `rasterization/include/kernels_forward.cuh::blend_cu` | tile-local RGB alpha blending，并记录 backward 所需 bucket checkpoint |
+| `rasterization/src/backward.cu::backward` | backward host 端按 `n_buckets` launch bucket-level backward，再执行 fused Adam |
+| `rasterization/include/kernels_backward.cuh::blend_backward_cu` | 一个 bucket 一个 block、一个 lane 一个 Gaussian 的反向 blending |
+
+| 阶段 | 原版 3DGS 的常见做法 | FasterGSFusedRapid |
+| --- | --- | --- |
+| 投影和 culling | 每个 Gaussian 计算投影、屏幕半径、tile bounds | `preprocess_cu` 同时做 raw activation、projection、EWA covariance、opacity culling、near/far culling |
+| tile 覆盖估计 | 主要按矩形 tile bounds 展开 | 先算矩形 bounds，再用 `will_primitive_contribute` 做 tile 内最大贡献测试，得到更精确的 touched tile 数 |
+| 深度排序 | Gaussian/instance 排序 | 先按 Gaussian depth 排序，再生成 tile instance |
+| instance 生成 | Gaussian 覆盖多少 tile，就写多少 Gaussian-tile pair | `create_instances_cu` 对大 footprint Gaussian 做 warp 协作，减少单线程长循环 |
+| tile range | 排序后提取每个 tile 的 instance 范围 | `extract_instance_ranges_cu` 写 `tile_instance_ranges` |
+| backward 预备信息 | forward 保存必要中间量 | forward 额外保存 tile/bucket/transmittance/n_processed，供 fused backward 使用 |
+| RGB blending | tile 内前向 alpha blending | `blend_cu` 一 tile 一个 CUDA block，256 个线程对应 16x16 像素 |
+
+### 7.2 preprocess：更精确的 tile 贡献判断
+
+`preprocess_cu` 每个线程先负责一个 Gaussian。它做的工作比“投影出屏幕半径”
+更完整：
+
+- 读取 raw `mean/scale/rotation/opacity/SH`；
+- 在 CUDA 内部做 `sigmoid(opacity)`、`exp(2 * scale)`、quaternion normalize
+  相关计算；
+- 根据 camera matrix 得到 depth 和 normalized image coordinates；
+- 构造 3D covariance，再通过 EWA Jacobian 投影成 2D covariance；
+- 根据 opacity 和 `min_alpha_threshold` 得到贡献阈值；
+- 算出一个保守的 screen tile rectangle；
+- 对 rectangle 内的 tile 调用 `compute_exact_n_touched_tiles`，只保留真实可能
+  有贡献的 tile。
+
+这里的 `will_primitive_contribute` 不是简单判断 tile 是否落在 2D ellipse 的
+外接矩形内。它会找 tile rectangle 中对该 Gaussian 贡献最大的点，计算该点的
+Mahalanobis power，并和 `power_threshold` 比较。结果是：
+
+- 大量“外接矩形碰到了，但 alpha 实际低于阈值”的 Gaussian-tile pair 被提前
+  去掉；
+- 后续 instance buffer、tile sort、blend 遍历都会变短；
+- 这和 FastGS/StopThePop 系列里“减少无效 tile/fragment”的目标一致，但本文档
+  不把它写成完整 FastGS compact-box 复现，只写当前代码已经实现的精确
+  tile contribution test。
+
+`preprocess_cu` 还有两个 warp 级早退：
+
+- depth/opacity/covariance 等判断后，如果整个 warp 都 inactive，就直接 return；
+- tile bounds 为空或精确 touched tile 数为 0 的 Gaussian 不进入后续 sort。
+
+这类早退对大场景很重要，因为训练后期 Gaussian 数量高，但单个视角可见且
+真正贡献的 Gaussian 只是其中一部分。
+
+### 7.3 forward 里的 warp 级负载均衡
+
+用户提到的“不同线程之间负载均衡”主要发生在两个 forward 子过程：
+
+1. `compute_exact_n_touched_tiles`
+2. `create_instances_cu`
+
+它们解决的是同一个问题：不同 Gaussian 的屏幕 footprint 差异很大。有的 Gaussian
+只覆盖 1 到 4 个 tile，有的可能覆盖几十甚至上百个 tile。如果仍然坚持“一个线程
+完整处理一个 Gaussian 的全部 tile”，大 Gaussian 对应的线程会长时间循环，而同一
+warp 里的其它 lane 已经空闲，造成严重 warp divergence。
+
+当前实现用 `config::n_sequential_threshold = 4` 把工作分成两段：
+
+```text
+每个 Gaussian 的前 4 个 tile:
+    由所属 lane 自己顺序处理，开销很小，不值得协作
+
+超过 4 个 tile 的剩余部分:
+    整个 warp 轮流协作处理这些“大 Gaussian”
+```
+
+具体机制如下：
+
+- 每个 lane 先处理自己 Gaussian 的前几个 tile；
+- 如果某个 lane 的 Gaussian 仍有大量 tile 要检查，就把该 lane 标记为
+  `compute_cooperatively`；
+- `warp.ballot(compute_cooperatively)` 得到当前 warp 里所有“大 Gaussian”的
+  lane mask；
+- warp 逐个选择这些 lane，把该 Gaussian 的 `screen_bounds/mean2d/conic/threshold`
+  通过 shared memory 或 `warp.shfl` 广播给整个 warp；
+- 32 个 lane 按 `instance_idx = i * 32 + lane_idx + threshold` 分摊剩余 tile；
+- 每个 lane 独立调用 `will_primitive_contribute`；
+- `warp.ballot(write)` 汇总本轮哪些 lane 要写 instance；
+- `__popc(write_ballot & previous_lanes_mask)` 计算 lane 内稳定写入偏移；
+- `__popc(write_ballot)` 更新当前 Gaussian 的写指针。
+
+这个设计的语义仍然是“为每个 Gaussian 写出所有有贡献的 tile instance”，但执行
+方式从“单 lane 长循环”变成“warp 内协作扫描”。因此它不会改变 alpha blending 的
+数学含义，改变的是：
+
+- 大 footprint Gaussian 不再拖慢单个 lane；
+- 同一 warp 的线程利用率更高；
+- touched tile count 和 instance 写入都保持 compact，不为无贡献 tile 占空间；
+- 写入顺序仍由 prefix-sum offset 和 tile sort 统一规整，不依赖未定义的线程顺序。
+
+这部分是 FasterGSFusedRapid 相比原版 3DGS 很重要的 CUDA 细节。原版文档里如果
+只写“tile culling + sort”，会漏掉这个 forward 阶段的负载均衡。
+
+### 7.4 instance 不是单纯矩形展开
+
+原版 3DGS 风格实现通常可以粗略理解为：
+
+```text
+Gaussian -> screen rectangle -> rectangle 内所有 tile instance
+```
+
+当前实现更接近：
+
+```text
+Gaussian -> conservative screen rectangle
+         -> per-tile contribution test
+         -> only contributing Gaussian-tile instances
+```
+
+这个区别对训练速度影响很直接。假设一个 Gaussian 的外接 rectangle 覆盖 40 个 tile，
+但真实 alpha 大于阈值的 tile 只有 12 个：
+
+- 矩形展开会生成 40 个 instance；
+- 当前代码只生成 12 个 instance；
+- 后面的 tile-key sort、tile range、blend forward、blend backward 都少处理
+  28 个无效 pair。
+
+由于 Gaussian 数量到中后期可能超过百万级，这个差异会放大成显著的 sort 和
+rasterization 工作量差异。
+
+### 7.5 blending forward：一 tile 一个 block，按像素并行
+
+`blend_cu` 的 forward launch 是：
+
+```text
+grid  = image tiles
+block = 16 x 16 threads
+```
+
+也就是一个 CUDA block 负责一个 tile，block 内 256 个线程对应 tile 内最多
+256 个像素。每个 block 会：
+
+- 根据 `tile_instance_ranges[tile_idx]` 找到当前 tile 的 sorted Gaussian list；
+- 以 `block_size_blend = 256` 为批次，把 Gaussian 参数加载到 shared memory；
+- 每个线程负责自己的 pixel，按前到后顺序遍历 Gaussian；
+- 对每个 Gaussian 计算 exponent、alpha、blending weight；
+- 当 transmittance 小于阈值时，该 pixel 提前停止；
+- block 内用 `__syncthreads_count(done)` 判断是否全部 pixel 完成，从而提前退出；
+- 写出 RGB；
+- 训练 forward 还写出每个 pixel 的 final transmittance 和 processed count。
+
+这里需要特别区分：
+
+- forward RGB blending 本身没有改成“一个 bucket 一个 block”；
+- forward 的 bucket 相关写入主要是为了 backward 做准备；
+- forward 的主要负载均衡来自前面的 exact tile contribution test 和 warp-cooperative
+  instance generation，以及 pixel 级 early stop。
+
+### 7.6 bucket buffers：forward 记录，backward 并行化
+
+虽然 `blend_cu` forward 仍是一 tile 一个 block，但它会在训练模式下记录 bucket
+信息：
+
+- `extract_bucket_counts` 把每个 tile 的 instance list 按 32 个 Gaussian 一组计数；
+- prefix sum 得到每个 tile 在全局 bucket buffer 里的 offset；
+- `blend_cu<true>` 写 `bucket_tile_index`，建立 bucket 到 tile 的映射；
+- forward 每处理到 32 个 Gaussian 的边界，就把当前 pixel 的
+  `color_pixel/transmittance` 写到 `bucket_color_transmittance`；
+- 同时记录 `tile_max_n_processed` 和每个 pixel 的 `tile_n_processed`。
+
+这些 buffer 让 backward 可以按 bucket launch：
+
+```text
+blend_backward_cu<<<n_buckets, 32>>>
+```
+
+每个 backward block 对应一个 bucket，32 个 lane 对应该 bucket 内最多 32 个
+Gaussian。它会反向遍历 tile 内像素，并用 `warp.shfl_up` 在 lane 之间传递
+per-pixel 的反向递推状态。最后通过 atomic add 汇总到 Gaussian 的
+`grad_mean2d/grad_conic/grad_opacity/grad_color`。
+
+这样做的意义是：
+
+- forward 不需要为 backward 保存完整 per-Gaussian-per-pixel 状态；
+- backward 不再由“一个 tile 的超长 Gaussian list”独占一个 block；
+- 大 tile 的反向工作被拆成多个 32-Gaussian bucket；
+- bucket 粒度也和 warp 宽度一致，适合用 lane 表示 bucket 内 Gaussian。
+
+因此，FasterGSFusedRapid 的 forward 细节和 backward 细节是配套的：forward
+负责生成 compact instance list 和足够的 bucket checkpoint，backward 才能用
+bucket-level 并行恢复 alpha blending 梯度。
+
+### 7.7 线程粒度对照表
+
+| 数据粒度 | 当前代码中的线程/块映射 | 作用 |
+| --- | --- | --- |
+| Gaussian | `preprocess_cu` 默认一个线程处理一个 Gaussian | 投影、2D covariance、opacity/covariance culling |
+| 大 footprint Gaussian | 一个 warp 协作处理剩余 tile | 避免单 lane 长循环 |
+| Gaussian-tile instance | `create_instances_cu` compact 写入 | 只保留真实贡献 tile |
+| tile | `blend_cu` 一个 block 处理一个 tile | 256 个像素并行 forward blending |
+| pixel | `blend_cu` 中一个 thread 对应一个 tile-local pixel | 独立维护 color/transmittance/early stop |
+| backward bucket | `blend_backward_cu` 一个 block 处理一个 32-Gaussian bucket | 把长 tile list 拆成多个反向任务 |
+| bucket 内 Gaussian | backward 一个 lane 对应一个 Gaussian | 用 warp shuffle 复原 per-pixel 反向递推 |
+
+### 7.8 和原版 3DGS 的 forward 细节差异总结
+
+| 细节 | 原版 3DGS | 当前 FasterGSFusedRapid |
+| --- | --- | --- |
+| 参数激活 | Python/PyTorch 侧常见 `exp/sigmoid/normalize` 或 rasterizer 内部分散处理 | CUDA preprocess 里集中处理 raw scale/opacity/rotation |
+| tile 覆盖 | 更偏向外接矩形展开 | 外接矩形后追加 per-tile contribution test |
+| 大 Gaussian 处理 | 单线程/单 lane 更容易出现长尾循环 | 超过阈值后 warp 协作扫描 tile |
+| instance 写入 | 写出 Gaussian-tile pair 后排序 | ballot + popcount 做 compact 写入，再 tile-key sort |
+| forward RGB | tile 内前到后 alpha blending | 仍保持同一 alpha blending 语义 |
+| forward early stop | transmittance early stop | 保留，并用 block 级 done 计数提前退出 tile block |
+| backward 准备 | 保存 backward 所需状态 | 额外保存 bucket checkpoint、tile max processed、per-pixel processed count |
+| score 支持 | 原版无 FastGS score path | forward 可选基于 `metric_map` 给 Gaussian 累积 metric contribution counts |
+
 ## 8. Backward 和 Optimizer
 
 ### 原版 3DGS
