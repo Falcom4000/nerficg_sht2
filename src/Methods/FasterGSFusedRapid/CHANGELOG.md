@@ -1,5 +1,46 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.17 - 2026-05-12
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_17_early_vcp_17k/*.yaml`, copied from v0.4.15.
+- Reduced `TRAINING.NUM_ITERATIONS` from `18000` to `17000`.
+- Moved `DENSIFICATION_END_ITERATION` from `14500` to `14000`.
+- Moved `MORTON_ORDERING_END_ITERATION` from `14500` to `14000`.
+- Moved active VCP pruning to `14500/15500/16500` with `FASTGS_PRUNING_START_ITERATION=14500`, `FASTGS_PRUNING_END_ITERATION=17000`, and `FASTGS_PRUNING_INTERVAL=1000`.
+- Kept `FASTGS_PRUNING_SCORE_THRESHOLD=0.90`.
+
+Verification:
+
+- Benchmark: `python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_17_early_vcp_17k --repeats 3 --suite-name fastergsfusedrapid_v0_4_17_early_vcp_17k_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_17_early_vcp_17k_r3`.
+
+| scene | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 129.7619s | 25.2965 | 0.7445 | 0.2990 | 1,463,113 | 4.8838GiB |
+| bonsai | 81.5528s | 31.2747 | 0.9358 | 0.2593 | 403,481 | 5.7147GiB |
+| counter | 76.2630s | 28.4818 | 0.8948 | 0.2842 | 269,498 | 4.9929GiB |
+| garden | 86.3814s | 26.7579 | 0.8347 | 0.1914 | 857,827 | 2.9970GiB |
+| kitchen | 88.9667s | 30.8205 | 0.9187 | 0.1757 | 393,713 | 5.5863GiB |
+| room | 78.7916s | 31.2671 | 0.9119 | 0.3063 | 348,669 | 6.0448GiB |
+| stump | 88.4798s | 25.8364 | 0.7280 | 0.3027 | 1,164,398 | 2.5717GiB |
+| mean | 90.0282s | 28.5336 | 0.8526 | 0.2598 | 700,100 | 4.6845GiB |
+
+Compared with v0.4.15:
+
+| version | mean train | mean PSNR | mean SSIM | mean LPIPS | mean n_gaussians | mean VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v0.4.15 | 94.1958s | 28.5681 | 0.8529 | 0.2586 | 702,535 | 4.6845GiB |
+| v0.4.17 | 90.0282s | 28.5336 | 0.8526 | 0.2598 | 700,100 | 4.6845GiB |
+
+Interpretation:
+
+- The 17k schedule is the strongest speed improvement so far: mean train time improves by `4.1677s` over v0.4.15 and `4.3121s` over v0.4.14.
+- Quality drops mildly: PSNR `-0.0346`, SSIM `-0.0002`, LPIPS `+0.0012` versus v0.4.15.
+- Final Gaussian count is essentially unchanged from v0.4.15, so the speed improvement mostly comes from the shorter schedule rather than additional model compaction.
+- Next config target: test a 16.5k schedule to find the lower training-budget boundary before quality degradation becomes too large.
+
 ## fastergsfusedrapid-v0.4.16 - 2026-05-12
 
 Config changes:
