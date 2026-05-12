@@ -1016,6 +1016,58 @@ DENSIFICATION_PERCENT_DENSE: 0.001
 和原版 3DGS 相比，densification 的时间窗口基本仍在前 15k 内，但当前训练总步数
 只有 18k，所以 densification 结束后只剩约 3k 步做收敛。
 
+### 9.1 Densification 信息在哪里产生，在哪里消费
+
+这部分要分清两层：
+
+- **统计信息产生**：在 CUDA backward 里产生；
+- **Clone/Split/Prune 决策和 tensor 增删**：在 Python `Model.py` 里用 PyTorch CUDA
+  tensor 操作完成。
+
+统计信息的 CUDA 路径是：
+
+```mermaid
+flowchart LR
+    A[loss.backward] --> B[_C.backward]
+    B --> C[blend_backward_cu]
+    C --> D[grad_mean2d / grad_mean2d_abs]
+    D --> E[preprocess_backward_cu]
+    E --> F[densification_info 3 channels]
+```
+
+具体来说：
+
+- `blend_backward_cu` 在 bucket backward 里累积每个 Gaussian 的
+  `grad_mean2d`；
+- 如果 `update_densification_info=True`，还会累积 `grad_mean2d_abs`；
+- `preprocess_backward_cu` 把 2D mean gradient 换算到 NDC 尺度；
+- 然后写入：
+  - `densification_info[0, i] += 1`，作为 denominator；
+  - `densification_info[1, i] += ||signed grad||`；
+  - `densification_info[2, i] += ||abs grad||`。
+
+这个开关由训练 forward 传入：
+
+```python
+update_densification_info = iteration < DENSIFICATION_END_ITERATION
+```
+
+也就是 densification 窗口内 backward 会额外维护这三个通道；窗口结束后，相关
+CUDA 路径会编译/运行到不更新 densification info 的分支，减少无用 atomics 和
+buffer 写入。
+
+消费端在 `Trainer.py::densify`：
+
+```text
+每 100 step:
+    compute_fastgs_scores()
+    model.gaussians.adaptive_density_control(...)
+    reset_densification_info()
+```
+
+所以 densification info 是跨多个 training iteration 累积的；每次 densify callback
+消费完以后重置，下一轮重新累计。
+
 ## 10. Clone/Split 条件
 
 ### 原版 3DGS
@@ -1058,6 +1110,147 @@ FASTGS_IMPORTANCE_THRESHOLD: 5.0
 - 当前版本多问：“它是否也反复落在多视角高误差区域？”
 
 只有两个条件都满足，Gaussian 才会 clone/split。
+
+### 10.1 Clone/Split 在哪里执行
+
+Clone/Split 的真正执行函数是：
+
+```text
+src/Methods/FasterGSFusedRapid/Model.py::adaptive_density_control
+```
+
+这个函数由训练回调调用：
+
+```text
+src/Methods/FasterGSFusedRapid/Trainer.py::densify
+```
+
+触发条件由 decorator 控制：
+
+```python
+@training_callback(
+    priority=100,
+    start_iteration='DENSIFICATION_START_ITERATION',
+    end_iteration='DENSIFICATION_END_ITERATION',
+    iteration_stride='DENSIFICATION_INTERVAL',
+)
+```
+
+也就是默认从 600 step 开始，到 14900 step 结束，每 100 step 做一次。这个回调
+运行在 `torch.no_grad()` 下，所有参数增删都是 PyTorch CUDA tensor 操作，不走
+PyTorch autograd，也不是自定义 CUDA kernel。
+
+### 10.2 adaptive_density_control 的具体步骤
+
+当前 `adaptive_density_control` 的流程是：
+
+```mermaid
+flowchart TD
+    A[densification_info] --> B[clone_candidate / split_candidate]
+    B --> C[FastGS importance gate]
+    C --> D[is_small by scale threshold]
+    D --> E[duplicate small Gaussians]
+    D --> F[split large Gaussians into two children]
+    E --> G[torch.cat append params]
+    F --> G
+    G --> H[append zero Adam moments]
+    H --> I[prune original split parents]
+    I --> J[low-opacity / large-scale prune]
+    J --> K[optional pruning-score weighted budget]
+    K --> L[opacity clamp + opacity moment reset]
+```
+
+候选 mask：
+
+```python
+denominator = densification_info[0].clamp_min(1.0)
+clone_candidate = densification_info[1] >= grad_threshold * denominator
+split_candidate = densification_info[2] >= abs_grad_threshold * denominator
+```
+
+FastGS/RapidGS importance gate：
+
+```python
+importance_mask = importance_score > FASTGS_IMPORTANCE_THRESHOLD
+clone_candidate &= importance_mask
+split_candidate &= importance_mask
+```
+
+small/large 判断：
+
+```python
+is_small = max(raw_scale) <= log(DENSIFICATION_PERCENT_DENSE * training_cameras_extent)
+```
+
+因此：
+
+- `clone = clone_candidate & is_small`
+- `split = split_candidate & ~is_small`
+
+### 10.3 Clone 的具体语义
+
+Clone 对 small Gaussian 做直接复制：
+
+```python
+duplicated_means = means[duplicate_mask]
+duplicated_sh = sh[duplicate_mask]
+duplicated_opacities = opacities[duplicate_mask]
+duplicated_scales = scales[duplicate_mask]
+duplicated_rotations = rotations[duplicate_mask]
+```
+
+然后把这些复制出来的 Gaussian append 到当前参数 tensor 后面：
+
+```python
+means = cat([means, duplicated_means, split_means])
+...
+```
+
+Clone 不改变原 Gaussian，也不缩放 child 的 scale。它的含义是：局部梯度高且
+Gaussian 已经足够小，就增加一个同位置、同形状、同颜色的自由度，让后续优化把
+两个 Gaussian 分开。
+
+### 10.4 Split 的具体语义
+
+Split 对 large Gaussian 生成两个 child：
+
+```python
+split_scales = exp(raw_scale)
+offsets = R(q) @ (split_scales * randn_like(split_scales))
+split_means = parent_mean + offsets
+split_scales = log(split_scales * 0.625)
+```
+
+也就是：
+
+- 每个 parent 生成 2 个 child；
+- child 在 parent 的局部椭球尺度内随机偏移；
+- child 继承 parent 的 SH、opacity、rotation；
+- child scale 乘 `0.625`，也就是原版 3DGS 常见的 `1 / 1.6` shrink；
+- append 新 child 以后，原 split parent 会被马上 prune 掉。
+
+这一步的实现细节是：
+
+```python
+split_prune_mask = cat([split_mask, zeros(n_new_gaussians)])
+self.prune(split_prune_mask)
+```
+
+所以最终保留的是两个缩小后的 child，而不是 parent + child。
+
+### 10.5 新 Gaussian 的 optimizer state
+
+因为当前版本是 fused CUDA Adam，Clone/Split 后必须同步维护 moment tensors。
+新增 Gaussian 的 moments 全部置零：
+
+```python
+moments_means = cat([moments_means, zeros_for_new_gaussians])
+moments_scales = cat([moments_scales, zeros_for_new_gaussians])
+...
+```
+
+这和 PyTorch optimizer 版本不同：这里没有 optimizer param group 要更新，但必须
+手工保证 Gaussian 参数 tensor 和 fused Adam moment tensor 的第一维完全对齐。
 
 ## 11. FastGS/RapidGS 多视角打分
 
@@ -1133,11 +1326,144 @@ FASTGS_PRUNING_SCORE_THRESHOLD: 0.9
 主训练路径。当前 v0.4.14 的主要 pruning 来源是：
 
 - densification callback 内部 pruning；
-- opacity reset 后的常规 pruning；
+- opacity reset interval 之后，densification callback 内部启用 large-scale pruning；
 - post-training cleanup。
 
 这和原版 3DGS 的不同在于：即使后期 VCP callback 不触发，densification 期间
 也已经引入了 multi-view score-guided pruning 语义。
+
+### 12.1 Pruning 在哪里执行
+
+底层 prune 函数是：
+
+```text
+src/Methods/FasterGSFusedRapid/Model.py::prune
+```
+
+它只做一件事：根据 `prune_mask` 对所有 per-Gaussian tensor 做同步筛选：
+
+```python
+valid_mask = ~prune_mask
+means = means[valid_mask].contiguous()
+sh = sh[valid_mask].contiguous()
+opacities = opacities[valid_mask].contiguous()
+scales = scales[valid_mask].contiguous()
+rotations = rotations[valid_mask].contiguous()
+moments_* = moments_*[valid_mask].contiguous()
+densification_info = densification_info[:, valid_mask].contiguous()
+```
+
+所以 pruning 也是 PyTorch CUDA tensor 操作，不是自定义 CUDA kernel。重要的是：
+参数、moments、densification_info 必须一起筛，否则 fused Adam 的 state 会和
+Gaussian 参数错位。
+
+### 12.2 当前版本有几类 pruning
+
+| pruning 类型 | 触发位置 | 作用 |
+| --- | --- | --- |
+| split parent pruning | `adaptive_density_control` 内部 | split 后删除原 parent，只保留两个 child |
+| densification-stage low-opacity pruning | `adaptive_density_control` 内部 | 删除 opacity 低于阈值的 Gaussian |
+| densification-stage large-scale pruning | `adaptive_density_control` 内部 | opacity reset 之后，删除过大的 Gaussian |
+| score-guided budget pruning | `adaptive_density_control` 内部 | 有 pruning score 时，不一次删光，而是按 score 权重抽样一部分 |
+| post-densification VCP pruning | `Trainer.py::prune_multiview_inconsistent` | 按 multi-view pruning score 删除不一致 Gaussian |
+| final cleanup pruning | `Model.py::training_cleanup` | 训练结束后删 low-opacity 和 degenerate rotation Gaussian |
+
+### 12.3 densification-stage pruning 细节
+
+Clone/Split 结束后，`adaptive_density_control` 会构造常规 prune mask：
+
+```python
+prune_mask = raw_opacity < logit(min_opacity)
+if prune_large_gaussians:
+    prune_mask |= max(raw_scale) > log(0.1 * training_cameras_extent)
+```
+
+其中 `prune_large_gaussians` 在 trainer 里由：
+
+```python
+iteration > OPACITY_RESET_INTERVAL
+```
+
+控制。也就是说，前期主要低 opacity pruning；过了 opacity reset interval 后，才
+启用 large-scale pruning。
+
+如果传入 `pruning_score`，当前实现不会直接删掉所有 `prune_mask=True` 的点，而是：
+
+```python
+scores = 1.0 - pruning_score
+sample_weights = 1 / (1e-6 + clamp(scores, min=0))
+remove_budget = int(0.5 * prune_mask.sum())
+sampled_indices = torch.multinomial(sample_weights, remove_budget, replacement=False)
+prune_mask &= selected_mask
+```
+
+直观理解：
+
+- `prune_mask` 给出“可以删”的候选；
+- `pruning_score` 调整候选中的删除偏好；
+- `remove_budget` 限制这轮只删候选的一半；
+- 用 `torch.multinomial` 保持 RapidGS 风格的随机预算 pruning，而不是一次性硬删。
+
+最后：
+
+```python
+self.prune(prune_mask)
+self._opacities.clamp_max_(logit(0.8))
+self.moments_opacities.zero_()
+```
+
+也就是每轮 density control 后会限制 opacity 上界，并清空 opacity 的 Adam moments。
+
+### 12.4 VCP / multi-view pruning 细节
+
+后期 VCP pruning 的入口是：
+
+```text
+Trainer.py::prune_multiview_inconsistent
+```
+
+它先调用：
+
+```python
+_, pruning_score = compute_fastgs_scores(dataset, compute_importance=False)
+```
+
+然后：
+
+```python
+prune_mask = opacity < FASTGS_PRUNING_MIN_OPACITY
+prune_mask |= pruning_score > FASTGS_PRUNING_SCORE_THRESHOLD
+self.prune(prune_mask)
+```
+
+这部分和 densification-stage pruning 的区别是：
+
+- 它不做 clone/split；
+- 它不做 weighted budget sampling；
+- 它是直接按 opacity 或 multi-view score threshold 删除；
+- 默认配置的 start 是 `FASTGS_PRUNING_START_ITERATION=18000`，如果实际训练
+  `NUM_ITERATIONS=18000` 且 loop 不包含第 18000 step，那么这条后期 callback
+  不会触发。
+
+### 12.5 和 CUDA backend 的关系
+
+Densification/Clone/Split/Pruning 不是完全在 CUDA kernel 里完成的。准确边界是：
+
+| 阶段 | 执行位置 |
+| --- | --- |
+| per-view RGB forward/backward | custom CUDA backend |
+| densification gradient/abs-gradient 统计 | custom CUDA backward |
+| FastGS metric counts | custom CUDA forward |
+| multi-view score 组合 | Python/PyTorch no-grad |
+| Clone/Split 参数生成 | Python/PyTorch CUDA tensor ops |
+| Prune mask 应用 | Python/PyTorch CUDA tensor indexing |
+| fused Adam moments 的新增/筛选/重排 | Python/PyTorch CUDA tensor ops |
+| fused Adam 数值更新 | custom CUDA backward |
+
+因此论文里应避免写成“所有 density control 都在 CUDA kernel 中完成”。更准确的写法是：
+CUDA backend 提供高效的梯度统计和 metric-count 统计；density-control policy 和
+Gaussian set mutation 在训练框架层用 GPU tensor 操作完成，并同步维护 fused Adam
+state。
 
 ## 13. Morton/z-order 排序
 
