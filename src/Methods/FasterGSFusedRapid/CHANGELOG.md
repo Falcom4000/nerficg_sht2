@@ -1,5 +1,74 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.26 - 2026-05-12
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_26_async_budgeted_vcp_16925/*.yaml`, copied from v0.4.23.
+- Changed only the final tail: `NUM_ITERATIONS=16925` and `FASTGS_PRUNING_END_ITERATION=16925`.
+- Kept densification/Morton end at `14000` and delayed/budgeted VCP at `14500/15500/16500`.
+
+Motivation:
+
+- v0.4.25 shortened the tail to 16.8k but exceeded the allowed `0.01dB` PSNR loss relative to v0.4.23.
+- This version tests a much smaller tail reduction while preserving the v0.4.23 structural-controller semantics.
+
+Verification:
+
+- Full 7-scene repeat-3 benchmark: `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_26_async_budgeted_vcp_16925 --repeats 3 --suite-name fastergsfusedrapid_v0_4_26_async_budgeted_vcp_16925_r3`.
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_26_async_budgeted_vcp_16925_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 128.3215s | 25.3477 | 0.7447 | 0.2990 | 1,490,428 | 4.8878GiB |
+| bonsai | 3 | 80.0498s | 31.2735 | 0.9355 | 0.2590 | 414,441 | 5.7162GiB |
+| counter | 3 | 75.2520s | 28.4102 | 0.8938 | 0.2844 | 275,779 | 4.9943GiB |
+| garden | 3 | 85.7463s | 26.7751 | 0.8344 | 0.1906 | 871,864 | 2.9974GiB |
+| kitchen | 3 | 87.9984s | 30.7729 | 0.9181 | 0.1756 | 402,577 | 5.5879GiB |
+| room | 3 | 77.7645s | 31.2608 | 0.9121 | 0.3062 | 359,628 | 6.0463GiB |
+| stump | 3 | 87.1506s | 25.8227 | 0.7267 | 0.3031 | 1,184,506 | 2.5744GiB |
+| mean | 21 | 88.8976s | 28.5233 | 0.8522 | 0.2597 | 714,175 | 4.6863GiB |
+
+Interpretation:
+
+- v0.4.26 is slightly faster than v0.4.23 (`88.90s` vs `89.70s`) but loses `0.0368dB` PSNR.
+- This still exceeds the current allowed loss budget of `0.01dB` from the v0.4.23 baseline (`28.5601 -> minimum 28.5501`).
+- Do not promote v0.4.26; even a 75-step tail reduction is not a reliable speed win under the strict quality gate.
+
+## fastergsfusedrapid-v0.4.25 - 2026-05-12
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_25_async_budgeted_vcp_16800/*.yaml`, copied from v0.4.23.
+- Changed only the final tail: `NUM_ITERATIONS=16800` and `FASTGS_PRUNING_END_ITERATION=16800`.
+- Kept densification/Morton end at `14000` and delayed/budgeted VCP at `14500/15500/16500`.
+
+Verification:
+
+- Full 7-scene repeat-3 benchmark: `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_25_async_budgeted_vcp_16800 --repeats 3 --suite-name fastergsfusedrapid_v0_4_25_async_budgeted_vcp_16800_r3`.
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_25_async_budgeted_vcp_16800_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 127.3802s | 25.2362 | 0.7421 | 0.2993 | 1,494,323 | 4.8922GiB |
+| bonsai | 3 | 80.2543s | 31.3784 | 0.9358 | 0.2589 | 413,762 | 5.7162GiB |
+| counter | 3 | 74.9309s | 28.4017 | 0.8941 | 0.2848 | 275,807 | 4.9944GiB |
+| garden | 3 | 85.3967s | 26.8426 | 0.8351 | 0.1912 | 875,189 | 2.9989GiB |
+| kitchen | 3 | 87.2629s | 30.7836 | 0.9181 | 0.1763 | 401,786 | 5.5879GiB |
+| room | 3 | 76.7190s | 31.2527 | 0.9119 | 0.3064 | 358,957 | 6.0465GiB |
+| stump | 3 | 87.2521s | 25.8534 | 0.7271 | 0.3029 | 1,185,371 | 2.5759GiB |
+| mean | 21 | 88.4566s | 28.5355 | 0.8520 | 0.2600 | 715,028 | 4.6874GiB |
+
+Interpretation:
+
+- v0.4.25 is faster than v0.4.23 (`88.46s` vs `89.70s`) but loses `0.0246dB` PSNR.
+- This exceeds the current allowed loss budget of `0.01dB` from the v0.4.23 baseline (`28.5601 -> minimum 28.5501`).
+- Do not promote v0.4.25; keep it as an over-compressed tail ablation.
+
 ## fastergsfusedrapid-v0.4.24 - 2026-05-12
 
 Config changes:
