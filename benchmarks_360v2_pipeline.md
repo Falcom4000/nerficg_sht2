@@ -92,28 +92,25 @@ Useful benchmark defaults are forced by the runner:
 
 `FasterGSFusedRapid` can use the Fast-Converging 3DGS style offline priors for Mip-NeRF 360 scenes:
 
-- Metric3D inverse-depth priors are written to `<SCENE>/mono_depths/<image_stem>_depth.npy`.
 - AnySplat Gaussian initialization is written to `<SCENE>/anysplat_init/point_cloud.ply`.
+- The default local AnySplat paths are `/root/codes/siggraph_asia/anySplat/config.json` and `/root/codes/siggraph_asia/anySplat/model.safetensors`.
 - The local AnySplat encoder also needs VGGT-1B weights. The default path is `/root/codes/siggraph_asia/VGGT-1B/model.safetensors`.
-- `configs/fastergsfusedrapid_v0_4_12_forward_depth_template` is the current all-scene code-level baseline and speed-focused recommendation: AnySplat initialization only, Mip-NeRF 360 PCA/rescale applied to Gaussian means/scales/rotations, Metric3D depth supervision disabled, `18000` training iterations, normal gradual SH-degree activation, and depth-disabled CUDA forward/backward paths compiled without inverse-depth work.
+- `configs/fastergsfusedrapid_v0_4_14_anysplat_only_no_depth` is the current maintained all-scene code-level baseline and speed-focused recommendation: AnySplat initialization only, Mip-NeRF 360 PCA/rescale applied to Gaussian means/scales/rotations, `18000` training iterations, normal gradual SH-degree activation, and no Metric3D/depth supervision or inverse-depth CUDA backend path.
+- `configs/fastergsfusedrapid_v0_4_12_forward_depth_template` is the predecessor all-scene baseline before the maintained depth path was removed from training.
 - `configs/fastergsfusedrapid_v0_4_10_all_scenes_baseline` is the predecessor all-scene baseline before the depth-disabled CUDA template cleanups.
 - `configs/fastergsfusedrapid_v0_4_9_anysplat_only_18k_sh_schedule` is the single-scene predecessor of v0.4.10 for bicycle.
 - `configs/fastergsfusedrapid_v0_4_8_anysplat_only_18k` is the same 18k schedule with all imported SH coefficients active from iteration 0.
 - `configs/fastergsfusedrapid_v0_4_6_anysplat_only_20k` is the more conservative speed/quality point.
-- `configs/fastergsfusedrapid_v0_4_5_both_world_transform` keeps both Metric3D and AnySplat enabled for diagnostics, but it is not the current recommendation because the bicycle split run regressed PSNR/SSIM and increased Gaussian count.
-- Training consumes priors through `TRAINING.DEPTH_SUPERVISION` and `TRAINING.ANYSPLAT_INITIALIZATION`.
-- Use the v0.4.5 split configs to isolate each prior source: `configs/fastergsfusedrapid_v0_4_5_anysplat_only`, `configs/fastergsfusedrapid_v0_4_5_depth_only`, and `configs/fastergsfusedrapid_v0_4_5_both_world_transform`.
+- Training consumes the AnySplat prior through `TRAINING.ANYSPLAT_INITIALIZATION`.
 
 Generate priors for one scene:
 
 ```bash
 python scripts/prepare_fast_converging_priors.py \
   dataset/mipnerf360/bicycle \
-  --tasks metric3d anysplat \
-  --metric3d-weights /path/to/metric_depth_vit_giant2_800k.pth \
+  --tasks anysplat \
   --anysplat-weights /path/to/anysplat/model.safetensors \
-  --vggt-weights /path/to/VGGT-1B/model.safetensors \
-  --metric3d-image-scale 0.3234937323
+  --vggt-weights /path/to/VGGT-1B/model.safetensors
 ```
 
 Then run the matching config:
@@ -121,9 +118,9 @@ Then run the matching config:
 ```bash
 python ./scripts/benchmark_360v2.py \
   -m FasterGSFusedRapid \
-  --config-dir configs/fastergsfusedrapid_v0_4_12_forward_depth_template \
+  --config-dir configs/fastergsfusedrapid_v0_4_14_anysplat_only_no_depth \
   --repeats 1 \
-  --suite-name fastergsfusedrapid_v0_4_12_forward_depth_template_bicycle \
+  --suite-name fastergsfusedrapid_v0_4_14_anysplat_only_no_depth_bicycle \
   --scenes bicycle
 ```
 
@@ -133,21 +130,20 @@ The one-command wrapper runs both stages serially:
 python scripts/run_fastergsfusedrapid_fast_converging.py \
   --scene bicycle \
   --prior-mode anysplat \
-  --metric3d-weights /path/to/metric_depth_vit_giant2_800k.pth \
   --anysplat-weights /path/to/anysplat/model.safetensors \
   --vggt-weights /path/to/VGGT-1B/model.safetensors
 ```
 
-Use `--dry-run-priors --prepare-only` to validate paths, split generation, scaled Metric3D workspace generation, and commands without running model inference or training. Use `--prior-mode metric3d`, `--prior-mode anysplat`, or `--prior-mode none` when running the split configs.
+Use `--dry-run-priors --prepare-only` to validate paths, split generation, AnySplat workspace generation, and commands without running model inference or training. Use `--prior-mode anysplat` or `--prior-mode none` depending on whether the AnySplat PLY already exists.
 
 Current split benchmark commands:
 
 ```bash
 python ./scripts/benchmark_360v2.py \
   -m FasterGSFusedRapid \
-  --config-dir configs/fastergsfusedrapid_v0_4_12_forward_depth_template \
+  --config-dir configs/fastergsfusedrapid_v0_4_14_anysplat_only_no_depth \
   --repeats 3 \
-  --suite-name fastergsfusedrapid_v0_4_12_forward_depth_template_r3
+  --suite-name fastergsfusedrapid_v0_4_14_anysplat_only_no_depth_r3
 
 python scripts/run_fastergsfusedrapid_fast_converging.py \
   --scene bicycle \
@@ -180,22 +176,6 @@ python scripts/run_fastergsfusedrapid_fast_converging.py \
   --config-dir configs/fastergsfusedrapid_v0_4_5_anysplat_only \
   --suite-name fastergsfusedrapid_v0_4_5_anysplat_only_bicycle \
   --repeats 1
-
-python scripts/run_fastergsfusedrapid_fast_converging.py \
-  --scene bicycle \
-  --skip-prior-generation \
-  --prior-mode none \
-  --config-dir configs/fastergsfusedrapid_v0_4_5_depth_only \
-  --suite-name fastergsfusedrapid_v0_4_5_depth_only_bicycle \
-  --repeats 1
-
-python scripts/run_fastergsfusedrapid_fast_converging.py \
-  --scene bicycle \
-  --skip-prior-generation \
-  --prior-mode none \
-  --config-dir configs/fastergsfusedrapid_v0_4_5_both_world_transform \
-  --suite-name fastergsfusedrapid_v0_4_5_both_world_transform_bicycle \
-  --repeats 1
 ```
 
 Recent bicycle single-run comparison:
@@ -204,8 +184,6 @@ Recent bicycle single-run comparison:
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | v0.3.14 baseline | 182.59s | 25.6324 | 0.7582 | 0.2941 | 1,246,630 | pre-prior fused rapid baseline |
 | v0.4.5 AnySplat-only 30k | 211.34s | 25.3423 | 0.7484 | 0.2916 | 1,450,320 | quality restored after world transform |
-| v0.4.5 depth-only 30k | 202.65s | 25.2751 | 0.7426 | 0.3102 | 1,303,899 | higher VRAM, no clear quality win |
-| v0.4.5 AnySplat+Depth 30k | 243.88s | 24.3770 | 0.7036 | 0.2967 | 1,914,620 | not recommended |
 | v0.4.6 AnySplat-only 20k | 150.40s | 25.3172 | 0.7464 | 0.2966 | 1,463,917 | conservative speed/quality point |
 | v0.4.7 AnySplat-only 15k | 120.43s | 25.1440 | 0.7390 | 0.3092 | 1,507,526 | faster but quality drops |
 | v0.4.8 AnySplat-only 18k | 139.10s | 25.3164 | 0.7441 | 0.2988 | 1,502,571 | all imported SH active from iteration 0 |
@@ -213,7 +191,8 @@ Recent bicycle single-run comparison:
 | v0.4.10 all-scene baseline, bicycle mean | 138.55s | 25.3187 | 0.7457 | 0.2969 | 1,532,846 | all-scene predecessor |
 | v0.4.11 depth-off backward template, bicycle mean | 138.83s | 25.3183 | 0.7460 | 0.2971 | 1,525,063 | neutral end-to-end, kept as depth path cleanup |
 | v0.4.12 depth-off forward template, bicycle mean | 139.24s | 25.3324 | 0.7456 | 0.2969 | 1,534,271 | current code-level baseline; all-scene mean slightly faster |
-| v0.4.13 optional depth buffers, bicycle mean | 139.28s | 25.3072 | 0.7455 | 0.2973 | 1,529,843 | not the default; tiny VRAM cleanup but all-scene mean slower |
+| v0.4.13 optional depth buffers, bicycle mean | 139.28s | 25.3072 | 0.7455 | 0.2973 | 1,529,843 | historical depth-buffer cleanup, not maintained as the default |
+| v0.4.14 AnySplat-only no-depth | 135.54s | 25.3055 | 0.7450 | 0.2974 | 1,530,661 | maintained training/scripts/CUDA backend remove depth supervision; bicycle smoke run |
 
 Current all-scene repeat-3 baseline, `configs/fastergsfusedrapid_v0_4_12_forward_depth_template`:
 
@@ -228,14 +207,10 @@ Current all-scene repeat-3 baseline, `configs/fastergsfusedrapid_v0_4_12_forward
 | stump | 94.86s | 25.8460 | 0.7284 | 0.3017 | 1,206,409 | 2.5740GiB |
 | mean | 96.94s | 28.5738 | 0.8532 | 0.2583 | 730,799 | 4.7432GiB |
 
-The current integration assumes Mip-NeRF 360 layout and uses scene-relative defaults:
+The current integration assumes Mip-NeRF 360 layout and uses a scene-relative AnySplat default:
 
 ```yaml
 TRAINING:
-  DEPTH_SUPERVISION:
-    ACTIVE: true
-    DIRECTORY: mono_depths
-    PRESCALED_TO_TRAINING_RESOLUTION: true
   ANYSPLAT_INITIALIZATION:
     ACTIVE: true
     PATH: anysplat_init/point_cloud.ply

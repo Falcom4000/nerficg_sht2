@@ -17,7 +17,6 @@ namespace faster_gs::rasterization::kernels::forward {
         }
     };
 
-    template <bool store_inv_depth>
     __global__ void preprocess_cu(
         const float3* __restrict__ means,
         const float3* __restrict__ scales,
@@ -34,7 +33,6 @@ namespace faster_gs::rasterization::kernels::forward {
         float2* __restrict__ primitive_mean2d,
         float4* __restrict__ primitive_conic_opacity,
         float3* __restrict__ primitive_color,
-        float* __restrict__ primitive_inv_depth,
         uint* __restrict__ n_visible_primitives,
         uint* __restrict__ n_instances,
         const uint n_primitives,
@@ -202,9 +200,6 @@ namespace faster_gs::rasterization::kernels::forward {
             primitive_idx, active_sh_bases, total_sh_bases
         );
         primitive_color[primitive_idx] = color;
-        if constexpr (store_inv_depth) {
-            primitive_inv_depth[primitive_idx] = 1.0f / depth;
-        }
 
         const uint offset = atomicAdd(n_visible_primitives, 1);
         const uint depth_key = __float_as_uint(depth);
@@ -362,7 +357,7 @@ namespace faster_gs::rasterization::kernels::forward {
         tile_n_buckets[tile_idx] = n_buckets;
     }
 
-    template <bool store_backward_buffers, bool use_inv_depth>
+    template <bool store_backward_buffers>
     __global__ void __launch_bounds__(config::block_size_blend) blend_cu(
         const uint2* __restrict__ tile_instance_ranges,
         const uint* __restrict__ tile_buckets_offset,
@@ -370,10 +365,8 @@ namespace faster_gs::rasterization::kernels::forward {
         const float2* __restrict__ primitive_mean2d,
         const float4* __restrict__ primitive_conic_opacity,
         const float3* __restrict__ primitive_color,
-        const float* __restrict__ primitive_inv_depth,
         const float3* __restrict__ bg_color,
         float* __restrict__ image,
-        float* __restrict__ inv_depth,
         const bool* __restrict__ metric_map,
         float* __restrict__ metric_counts,
         float* __restrict__ tile_final_transmittances,
@@ -381,7 +374,6 @@ namespace faster_gs::rasterization::kernels::forward {
         uint* __restrict__ tile_n_processed,
         uint* __restrict__ bucket_tile_index,
         float4* __restrict__ bucket_color_transmittance,
-        float* __restrict__ bucket_inv_depth,
         const uint width,
         const uint height,
         const uint grid_width)
@@ -411,10 +403,8 @@ namespace faster_gs::rasterization::kernels::forward {
         __shared__ float2 collected_mean2d[config::block_size_blend];
         __shared__ float4 collected_conic_opacity[config::block_size_blend];
         __shared__ float3 collected_color[config::block_size_blend];
-        __shared__ float collected_inv_depth[config::block_size_blend];
         // initialize local storage
         float3 color_pixel = make_float3(0.0f);
-        float inv_depth_pixel = 0.0f;
         float transmittance = 1.0f;
         uint n_processed = 0;
         uint n_processed_and_used = 0;
@@ -429,9 +419,6 @@ namespace faster_gs::rasterization::kernels::forward {
                 collected_conic_opacity[thread_rank] = primitive_conic_opacity[primitive_idx];
                 const float3 color = fmaxf(primitive_color[primitive_idx], 0.0f);
                 collected_color[thread_rank] = color;
-                if constexpr (use_inv_depth) {
-                    collected_inv_depth[thread_rank] = primitive_inv_depth[primitive_idx];
-                }
             }
             block.sync();
             const int current_batch_size = min(config::block_size_blend, n_points_remaining);
@@ -441,9 +428,6 @@ namespace faster_gs::rasterization::kernels::forward {
 	                if (j % 32 == 0) {
 	                    const float4 current_color_transmittance = make_float4(color_pixel, transmittance);
 	                    bucket_color_transmittance[bucket_offset * config::block_size_blend + thread_rank] = current_color_transmittance;
-	                    if constexpr (use_inv_depth) {
-	                        bucket_inv_depth[bucket_offset * config::block_size_blend + thread_rank] = inv_depth_pixel;
-	                    }
 	                    bucket_offset++;
 	                }
                 }
@@ -464,9 +448,6 @@ namespace faster_gs::rasterization::kernels::forward {
                 // blend fragment into pixel color
                 const float blending_weight = transmittance * alpha;
                 color_pixel += blending_weight * collected_color[j];
-                if constexpr (use_inv_depth) {
-                    inv_depth_pixel += blending_weight * collected_inv_depth[j];
-                }
                 if (metric_counts != nullptr) {
                     const uint pixel_idx = width * pixel_coords.y + pixel_coords.x;
                     if (metric_map[pixel_idx]) {
@@ -496,9 +477,6 @@ namespace faster_gs::rasterization::kernels::forward {
             image[pixel_idx] = color_pixel.x;
             image[n_pixels + pixel_idx] = color_pixel.y;
             image[2 * n_pixels + pixel_idx] = color_pixel.z;
-            if constexpr (use_inv_depth) {
-                inv_depth[pixel_idx] = inv_depth_pixel;
-            }
             if constexpr (store_backward_buffers) {
                 tile_final_transmittances[pixel_idx] = transmittance;
                 tile_n_processed[pixel_idx] = n_processed_and_used;

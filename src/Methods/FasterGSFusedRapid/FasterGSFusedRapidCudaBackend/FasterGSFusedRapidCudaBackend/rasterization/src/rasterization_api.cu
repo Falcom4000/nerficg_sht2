@@ -8,7 +8,7 @@
 #include <functional>
 #include <tuple>
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int, int, int>
 faster_gs::rasterization::forward_wrapper(
     const torch::Tensor& means,
     const torch::Tensor& scales,
@@ -17,7 +17,6 @@ faster_gs::rasterization::forward_wrapper(
 	    const torch::Tensor& sh_coefficients_0,
 	    const torch::Tensor& sh_coefficients_rest,
 	    const torch::Tensor& metric_map,
-	    const bool render_inv_depth,
 	    const torch::Tensor& w2c,
     const torch::Tensor& cam_position,
     const torch::Tensor& bg_color,
@@ -49,7 +48,6 @@ faster_gs::rasterization::forward_wrapper(
     const torch::TensorOptions float_options = torch::TensorOptions().dtype(torch::kFloat).device(torch::kCUDA);
     const torch::TensorOptions byte_options = torch::TensorOptions().dtype(torch::kByte).device(torch::kCUDA);
     torch::Tensor image = torch::empty({3, height, width}, float_options);
-	    torch::Tensor inv_depth = render_inv_depth ? torch::empty({height, width}, float_options) : torch::empty({0}, float_options);
     const bool collect_metric_counts = metric_map.size(0) > 0;
     if (collect_metric_counts && (metric_map.scalar_type() != torch::kBool || !metric_map.is_cuda() || !metric_map.is_contiguous()))
         throw std::runtime_error("metric_map must be a contiguous CUDA bool tensor");
@@ -79,7 +77,6 @@ faster_gs::rasterization::forward_wrapper(
         reinterpret_cast<float3*>(cam_position.data_ptr<float>()),
         reinterpret_cast<float3*>(bg_color.data_ptr<float>()),
         image.data_ptr<float>(),
-	        render_inv_depth ? inv_depth.data_ptr<float>() : nullptr,
         collect_metric_counts ? metric_counts.data_ptr<float>() : nullptr,
         n_primitives,
         active_sh_bases,
@@ -96,7 +93,6 @@ faster_gs::rasterization::forward_wrapper(
 
     return {
         image,
-        inv_depth,
         metric_counts,
         primitive_buffers, tile_buffers, instance_buffers, bucket_buffers,
         n_instances, n_buckets, instance_primitive_indices_selector
@@ -201,9 +197,7 @@ void faster_gs::rasterization::backward_wrapper(
 	    torch::Tensor& moments_sh_coefficients_0,
 	    torch::Tensor& moments_sh_coefficients_rest,
 	    const torch::Tensor& grad_image,
-	    const torch::Tensor& grad_inv_depth,
 	    const torch::Tensor& image,
-	    const torch::Tensor& inv_depth,
 	    const torch::Tensor& primitive_buffers,
     const torch::Tensor& tile_buffers,
     const torch::Tensor& instance_buffers,
@@ -238,21 +232,13 @@ void faster_gs::rasterization::backward_wrapper(
 	    torch::Tensor grad_conic_opacity_helper = torch::zeros({4, n_primitives}, float_options);
 
 	    const bool update_densification_info = densification_info.size(0) > 0;
-	    const bool use_inv_depth_grad = grad_inv_depth.size(0) > 0;
-	    const bool has_inv_depth_buffers = inv_depth.size(0) > 0;
-	    if (use_inv_depth_grad && !has_inv_depth_buffers)
-	        throw std::runtime_error("grad_inv_depth is non-empty but inv_depth forward buffers are absent");
 	    torch::Tensor grad_mean2d_abs_helper = update_densification_info ? torch::zeros({n_primitives, 2}, float_options) : torch::empty({0}, float_options);
-	    torch::Tensor grad_inv_depth_helper = use_inv_depth_grad ? torch::zeros({n_primitives}, float_options) : torch::empty({0}, float_options);
 	    float* grad_conic_opacity_ptr = grad_conic_opacity_helper.data_ptr<float>();
 	    torch::Tensor grad_image_contiguous = grad_image.contiguous();
-	    torch::Tensor grad_inv_depth_contiguous = use_inv_depth_grad ? grad_inv_depth.contiguous() : grad_inv_depth;
 
 	    backward(
 	        grad_image_contiguous.data_ptr<float>(),
-	        use_inv_depth_grad ? grad_inv_depth_contiguous.data_ptr<float>() : nullptr,
 	        image.data_ptr<float>(),
-	        has_inv_depth_buffers ? inv_depth.data_ptr<float>() : nullptr,
 	        reinterpret_cast<float3*>(means.data_ptr<float>()),
         reinterpret_cast<float3*>(scales.data_ptr<float>()),
         reinterpret_cast<float4*>(rotations.data_ptr<float>()),
@@ -274,7 +260,6 @@ void faster_gs::rasterization::backward_wrapper(
 	        reinterpret_cast<char*>(bucket_buffers.data_ptr()),
 	        grad_conic_opacity_ptr + 3 * n_primitives,
 	        reinterpret_cast<float3*>(grad_colors.data_ptr<float>()),
-	        use_inv_depth_grad ? grad_inv_depth_helper.data_ptr<float>() : nullptr,
 	        reinterpret_cast<float2*>(grad_mean2d_helper.data_ptr<float>()),
         update_densification_info ? reinterpret_cast<float2*>(grad_mean2d_abs_helper.data_ptr<float>()) : nullptr,
         grad_conic_opacity_ptr,

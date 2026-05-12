@@ -3,13 +3,11 @@
 import random
 from pathlib import Path
 
-import numpy as np
 import torch
-import torch.nn.functional as F
 
 import Framework
 from Datasets.Base import BaseDataset
-from Datasets.utils import BasicPointCloud, ImageData, apply_background_color, compute_scaled_image_size
+from Datasets.utils import BasicPointCloud, apply_background_color
 from Logging import Logger
 from Methods.Base.GuiTrainer import GuiTrainer
 from Methods.Base.utils import pre_training_callback, training_callback, post_training_callback
@@ -17,29 +15,6 @@ from Methods.FasterGSFusedRapid.Loss import FasterGSFusedRapidLoss
 from Methods.FasterGSFusedRapid.utils import enable_expandable_segments, carve
 from Optim.Losses.DSSIM import fused_dssim
 from Optim.Samplers.DatasetSamplers import DatasetSampler
-
-
-def load_inverse_depth(path: Path) -> torch.Tensor:
-    """Loads a Metric3D inverse-depth prior saved as HxW or HxWx1 numpy array."""
-    inv_depth = torch.from_numpy(np.load(path).astype(np.float32, copy=False))
-    if inv_depth.ndim == 2:
-        inv_depth = inv_depth[None]
-    elif inv_depth.ndim == 3 and inv_depth.shape[-1] == 1:
-        inv_depth = inv_depth.permute(2, 0, 1)
-    elif inv_depth.ndim != 3 or inv_depth.shape[0] != 1:
-        raise Framework.DatasetError(f'invalid inverse-depth shape in "{path}": {tuple(inv_depth.shape)}')
-    inv_depth = inv_depth.contiguous()
-    inv_depth[~torch.isfinite(inv_depth)] = 0.0
-    return inv_depth.clamp_min_(0.0)
-
-
-def resize_inverse_depth(inv_depth: torch.Tensor, scale_factor: float) -> torch.Tensor:
-    return F.interpolate(
-        input=inv_depth[None],
-        size=compute_scaled_image_size(inv_depth.shape[1:], scale_factor),
-        mode='bilinear',
-        align_corners=False,
-    )[0]
 
 
 @Framework.Configurable.configure(
@@ -74,15 +49,6 @@ def resize_inverse_depth(inv_depth: torch.Tensor, scale_factor: float) -> torch.
     LOSS=Framework.ConfigParameterList(
         LAMBDA_L1=0.8,  # weight for the per-pixel L1 loss on the rgb image
         LAMBDA_DSSIM=0.2,  # weight for the DSSIM loss on the rgb image
-    ),
-    DEPTH_SUPERVISION=Framework.ConfigParameterList(
-        ACTIVE=False,
-        DIRECTORY='mono_depths',
-        WEIGHT_INIT=0.1,
-        WEIGHT_FINAL=0.0,
-        LOSS_MULTIPLIER=1.0,
-        MIN_VALID_INV_DEPTH=0.0,
-        PRESCALED_TO_TRAINING_RESOLUTION=False,
     ),
     ANYSPLAT_INITIALIZATION=Framework.ConfigParameterList(
         ACTIVE=False,
@@ -133,7 +99,6 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
                 'end': end,
                 'render': 0.0,
                 'rgb_loss': 0.0,
-                'depth_loss': 0.0,
                 'backward': 0.0,
                 'densify_prune': 0.0,
                 'optimizer': 0.0,
@@ -169,47 +134,6 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
         if (alpha_gt := view.alpha) is not None:
             rgb_gt = apply_background_color(rgb_gt, alpha_gt, bg_color)
         return rgb_gt
-
-    def _depth_weight(self, iteration: int) -> float:
-        if not self.DEPTH_SUPERVISION.ACTIVE:
-            return 0.0
-        init = float(self.DEPTH_SUPERVISION.WEIGHT_INIT)
-        final = float(self.DEPTH_SUPERVISION.WEIGHT_FINAL)
-        if init <= 0.0 and final <= 0.0:
-            return 0.0
-        progress = min(max(float(iteration + 1) / float(self.NUM_ITERATIONS), 0.0), 1.0)
-        if init > 0.0 and final > 0.0:
-            return init * ((final / init) ** progress)
-        return init + (final - init) * progress
-
-    def _depth_loss(self, inv_depth: torch.Tensor, view, iteration: int) -> torch.Tensor | None:
-        weight = self._depth_weight(iteration)
-        if weight <= 0.0 or getattr(view, '_depth', None) is None:
-            return None
-        cache = getattr(view, '_depth_supervision_cache', None)
-        min_valid_inv_depth = float(self.DEPTH_SUPERVISION.MIN_VALID_INV_DEPTH)
-        if cache is None or cache['min_valid_inv_depth'] != min_valid_inv_depth:
-            inv_depth_gt = view.depth[0].contiguous()
-            valid_mask = (torch.isfinite(inv_depth_gt) & (inv_depth_gt > min_valid_inv_depth)).to(inv_depth_gt.dtype)
-            cache = {
-                'min_valid_inv_depth': min_valid_inv_depth,
-                'inv_depth': inv_depth_gt,
-                'valid_mask': valid_mask,
-                'normalizer': valid_mask.sum().clamp_min(1.0),
-            }
-            view._depth_supervision_cache = cache
-        loss = (torch.abs(inv_depth - cache['inv_depth']) * cache['valid_mask']).sum() / cache['normalizer']
-        return loss * weight * float(self.DEPTH_SUPERVISION.LOSS_MULTIPLIER)
-
-    def _infer_depth_path(self, view) -> Path | None:
-        rgb_data = getattr(view, '_rgb', None)
-        if rgb_data is None:
-            return None
-        rgb_path = rgb_data.path
-        directory = Path(self.DEPTH_SUPERVISION.DIRECTORY)
-        if not directory.is_absolute():
-            directory = rgb_path.parent.parent / directory
-        return directory / f'{rgb_path.stem}_depth.npy'
 
     @staticmethod
     def _resolve_scene_path(dataset: 'BaseDataset', path: str | Path) -> Path:
@@ -276,37 +200,6 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
     def create_sampler(self, _, dataset: 'BaseDataset') -> None:
         """Creates the sampler."""
         self.train_sampler = DatasetSampler(dataset=dataset.train(), random=True)
-
-    @pre_training_callback(priority=5100)
-    @torch.no_grad()
-    def setup_depth_priors(self, _, dataset: 'BaseDataset') -> None:
-        """Attach optional Metric3D inverse-depth priors to training views."""
-        if not self.DEPTH_SUPERVISION.ACTIVE:
-            return
-
-        dataset.train()
-        n_loaded = 0
-        n_missing = 0
-        for view in dataset:
-            depth_path = self._infer_depth_path(view)
-            if depth_path is None or not depth_path.is_file():
-                n_missing += 1
-                continue
-            rgb_data = getattr(view, '_rgb', None)
-            scale_factor = None if self.DEPTH_SUPERVISION.PRESCALED_TO_TRAINING_RESOLUTION else (rgb_data.scale_factor if rgb_data is not None else None)
-            view.depth = ImageData(
-                depth_path,
-                n_channels=1,
-                scale_factor=scale_factor,
-                load_fn=load_inverse_depth,
-                resize_fn=resize_inverse_depth,
-            )
-            n_loaded += 1
-
-        if n_loaded > 0:
-            Logger.log_info(f'loaded {n_loaded} Metric3D inverse-depth priors for FasterGSFusedRapid')
-        if n_missing > 0:
-            Logger.log_warning(f'Metric3D inverse-depth priors missing for {n_missing} training views; those views will skip depth supervision')
 
     @pre_training_callback(priority=40)
     @torch.no_grad()
@@ -429,7 +322,7 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
         """Performs a training step without actually doing the optimizer step."""
         profile_window = self._profile_window(iteration)
         if profile_window is not None:
-            profile_events = [torch.cuda.Event(enable_timing=True) for _ in range(5)]
+            profile_events = [torch.cuda.Event(enable_timing=True) for _ in range(4)]
             profile_events[0].record()
             self._record_profile_gaussian_count(profile_window)
         # init modes
@@ -443,13 +336,12 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
         view = self.train_sampler.get(dataset=dataset)['view']
         # render
         bg_color = torch.rand_like(view.camera.background_color) if self.USE_RANDOM_BACKGROUND_COLOR else view.camera.background_color
-        image, inv_depth, autograd_dummy = self.renderer.render_image_training(
+        image, autograd_dummy = self.renderer.render_image_training(
             view=view,
             update_densification_info=iteration < self.DENSIFICATION_END_ITERATION,
             bg_color=bg_color,
             adam_step_count=optimization_step,
             autograd_dummy=self.autograd_dummy,
-            return_inv_depth=self.DEPTH_SUPERVISION.ACTIVE,
         )
         if profile_window is not None:
             profile_events[1].record()
@@ -461,20 +353,14 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
         loss = self.loss(image, rgb_gt) + 0.0 * autograd_dummy
         if profile_window is not None:
             profile_events[2].record()
-        depth_loss = self._depth_loss(inv_depth, view, iteration)
-        if depth_loss is not None:
-            loss = loss + depth_loss
-        if profile_window is not None:
-            profile_events[3].record()
         # backward
         loss.backward()
         if profile_window is not None:
-            profile_events[4].record()
+            profile_events[3].record()
             torch.cuda.synchronize()
             profile_window['render'] += profile_events[0].elapsed_time(profile_events[1])
             profile_window['rgb_loss'] += profile_events[1].elapsed_time(profile_events[2])
-            profile_window['depth_loss'] += profile_events[2].elapsed_time(profile_events[3])
-            profile_window['backward'] += profile_events[3].elapsed_time(profile_events[4])
+            profile_window['backward'] += profile_events[2].elapsed_time(profile_events[3])
             profile_window['count'] += 1
             self._record_profile_gaussian_count(profile_window)
 
@@ -511,18 +397,18 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
         columns = [
             'window', 'start_iteration', 'end_iteration_exclusive', 'count',
             'n_gaussians_first', 'n_gaussians_last', 'n_gaussians_min', 'n_gaussians_max',
-            'render_ms', 'rgb_loss_ms', 'depth_loss_ms', 'loss_ms', 'backward_ms',
+            'render_ms', 'rgb_loss_ms', 'loss_ms', 'backward_ms',
             'densify_prune_ms', 'optimizer_ms', 'total_ms',
         ]
         lines = [','.join(columns)]
         for window in self.profile_windows:
             count = window['count']
             if count > 0:
-                values = {key: window[key] / count for key in ['render', 'rgb_loss', 'depth_loss', 'backward', 'densify_prune', 'optimizer']}
-                values['loss'] = values['rgb_loss'] + values['depth_loss']
+                values = {key: window[key] / count for key in ['render', 'rgb_loss', 'backward', 'densify_prune', 'optimizer']}
+                values['loss'] = values['rgb_loss']
                 total = values['render'] + values['loss'] + values['backward'] + values['densify_prune'] + values['optimizer']
             else:
-                values = {key: 0.0 for key in ['render', 'rgb_loss', 'depth_loss', 'loss', 'backward', 'densify_prune', 'optimizer']}
+                values = {key: 0.0 for key in ['render', 'rgb_loss', 'loss', 'backward', 'densify_prune', 'optimizer']}
                 total = 0.0
 
             row = [
@@ -536,7 +422,6 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
                 str(window['n_gaussians_max'] or ''),
                 f"{values['render']:.6f}",
                 f"{values['rgb_loss']:.6f}",
-                f"{values['depth_loss']:.6f}",
                 f"{values['loss']:.6f}",
                 f"{values['backward']:.6f}",
                 f"{values['densify_prune']:.6f}",

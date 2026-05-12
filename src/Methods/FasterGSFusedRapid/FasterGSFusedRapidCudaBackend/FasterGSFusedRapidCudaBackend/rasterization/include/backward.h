@@ -7,9 +7,7 @@ namespace faster_gs::rasterization {
 
     void backward(
         const float* grad_image,
-        const float* grad_inv_depth,
         const float* image,
-        const float* inv_depth,
         float3* means,
         float3* scales,
         float4* rotations,
@@ -31,7 +29,6 @@ namespace faster_gs::rasterization {
         char* bucket_buffers_blob,
         float* grad_opacities,
         float3* grad_colors,
-        float* grad_inv_depths,
         float2* grad_mean2d_helper,
         float2* grad_mean2d_abs_helper,
         float* grad_conic_helper,

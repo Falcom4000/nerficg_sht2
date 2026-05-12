@@ -1,5 +1,42 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.14 - 2026-05-12
+
+Implementation/config changes:
+
+- Removed the maintained Metric3D/depth supervision path from `FasterGSFusedRapidTrainer`: no depth prior loading callback, no inverse-depth loss, and no `TRAINING.DEPTH_SUPERVISION` config surface.
+- Removed inverse-depth rendering and inverse-depth gradient support from the maintained fused CUDA backend ABI, buffers, forward kernels, backward kernels, and Python autograd binding.
+- Simplified training rasterizer calls to return RGB plus the autograd dummy only.
+- Removed Metric3D options from the fast-converging prior scripts; `prepare_fast_converging_priors.py` now prepares AnySplat priors only.
+- Updated AnySplat default checkpoint paths to `/root/codes/siggraph_asia/anySplat/config.json` and `/root/codes/siggraph_asia/anySplat/model.safetensors`.
+- Allow the AnySplat prior workspace to replace an old generated `images/` directory with a symlink to the scene images.
+- Added `configs/fastergsfusedrapid_v0_4_14_anysplat_only_no_depth/*.yaml`, copied from v0.4.12 with the depth-supervision block removed and experiment metadata updated.
+- Removed the profiler `depth_loss_ms` column; `loss_ms` now equals the RGB loss timing.
+- Updated `benchmarks_360v2_pipeline.md` so the maintained offline-to-training path is AnySplat-only.
+
+Verification:
+
+- Build: `pip install --force-reinstall --no-build-isolation src/Methods/FasterGSFusedRapid/FasterGSFusedRapidCudaBackend`
+- ABI check: installed `_C.forward` no longer takes the old `render_inv_depth` boolean argument and now returns `image, metric_counts, primitive_buffers, tile_buffers, instance_buffers, bucket_buffers, n_instances, n_buckets, selector`.
+- Dry-run prior check: `python scripts/prepare_fast_converging_priors.py dataset/mipnerf360/bicycle --tasks anysplat --dry-run`
+- Smoke benchmark: `python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_14_anysplat_only_no_depth --repeats 1 --suite-name fastergsfusedrapid_v0_4_14_anysplat_only_no_depth_smoke4 --scenes bicycle`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_14_anysplat_only_no_depth_smoke4`.
+
+| scene | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 135.5439s | 25.3055 | 0.7450 | 0.2974 | 1,530,661 | 4.8935GiB |
+
+Profile windows:
+
+- `1000-1100`: `render=0.8525ms`, `rgb_loss=0.4628ms`, `backward=2.5726ms`, `densify/prune=0.3369ms`, total `4.2248ms`.
+- `14000-14100`: `render=1.0324ms`, `rgb_loss=0.4517ms`, `backward=4.5957ms`, `densify/prune=0.3850ms`, total `6.4648ms`.
+
+Interpretation:
+
+- Removing the depth backend restores a smaller RGB-only ABI and removes dead inverse-depth buffer/kernel branches.
+- The single bicycle smoke run is faster than the v0.4.12/v0.4.13 bicycle repeat means while quality stays in the normal AnySplat-only range.
+- Full all-scene repeat-3 verification remains the next benchmark step; v0.4.12 is still the last completed all-scene repeat-3 baseline.
+
 ## fastergsfusedrapid-v0.4.13 - 2026-05-11
 
 Implementation/config changes:

@@ -6,7 +6,6 @@
 #include "helper_math.h"
 #include <cub/cub.cuh>
 #include <functional>
-#include <type_traits>
 
 // sorting is done separately for depth and tile as proposed in https://github.com/m-schuetz/Splatshop
 std::tuple<int, int, int> faster_gs::rasterization::forward(
@@ -25,7 +24,6 @@ std::tuple<int, int, int> faster_gs::rasterization::forward(
     const float3* cam_position,
     const float3* bg_color,
     float* image,
-    float* inv_depth,
     float* metric_counts,
     const int n_primitives,
     const int active_sh_bases,
@@ -43,7 +41,6 @@ std::tuple<int, int, int> faster_gs::rasterization::forward(
     const dim3 block(config::tile_width, config::tile_height, 1);
     const int n_tiles = grid.x * grid.y;
     const int end_bit = extract_end_bit(n_tiles - 1);
-    const bool use_inv_depth_buffers = inv_depth != nullptr;
 
     char* tile_buffers_blob = resize_tile_buffers(required<TileBuffers>(n_tiles));
     TileBuffers tile_buffers = TileBuffers::from_blob(tile_buffers_blob, n_tiles);
@@ -59,50 +56,44 @@ std::tuple<int, int, int> faster_gs::rasterization::forward(
     }
     else cudaMemset(tile_buffers.instance_ranges, 0, sizeof(uint2) * n_tiles);
 
-    char* primitive_buffers_blob = resize_primitive_buffers(required<PrimitiveBuffers>(n_primitives, use_inv_depth_buffers));
-    PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives, use_inv_depth_buffers);
+    char* primitive_buffers_blob = resize_primitive_buffers(required<PrimitiveBuffers>(n_primitives));
+    PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives);
 
     cudaMemset(primitive_buffers.n_visible_primitives, 0, sizeof(uint));
     cudaMemset(primitive_buffers.n_instances, 0, sizeof(uint));
 
-    auto launch_preprocess = [&](auto use_inv_depth_tag) {
-        constexpr bool use_inv_depth = decltype(use_inv_depth_tag)::value;
-        kernels::forward::preprocess_cu<use_inv_depth><<<div_round_up(n_primitives, config::block_size_preprocess), config::block_size_preprocess>>>(
-            means,
-            scales,
-            rotations,
-            opacities,
-            sh_coefficients_0,
-            sh_coefficients_rest,
-            w2c,
-            cam_position,
-            primitive_buffers.depth_keys.Current(),
-            primitive_buffers.primitive_indices.Current(),
-            primitive_buffers.n_touched_tiles,
-            primitive_buffers.screen_bounds,
-            primitive_buffers.mean2d,
-            primitive_buffers.conic_opacity,
-            primitive_buffers.color,
-            primitive_buffers.inv_depth,
-            primitive_buffers.n_visible_primitives,
-            primitive_buffers.n_instances,
-            n_primitives,
-            grid.x,
-            grid.y,
-            active_sh_bases,
-            total_sh_bases,
-            static_cast<float>(width),
-            static_cast<float>(height),
-            focal_x,
-            focal_y,
-            center_x,
-            center_y,
-            near_plane,
-            far_plane
-        );
-    };
-    if (use_inv_depth_buffers) launch_preprocess(std::true_type{});
-    else launch_preprocess(std::false_type{});
+    kernels::forward::preprocess_cu<<<div_round_up(n_primitives, config::block_size_preprocess), config::block_size_preprocess>>>(
+        means,
+        scales,
+        rotations,
+        opacities,
+        sh_coefficients_0,
+        sh_coefficients_rest,
+        w2c,
+        cam_position,
+        primitive_buffers.depth_keys.Current(),
+        primitive_buffers.primitive_indices.Current(),
+        primitive_buffers.n_touched_tiles,
+        primitive_buffers.screen_bounds,
+        primitive_buffers.mean2d,
+        primitive_buffers.conic_opacity,
+        primitive_buffers.color,
+        primitive_buffers.n_visible_primitives,
+        primitive_buffers.n_instances,
+        n_primitives,
+        grid.x,
+        grid.y,
+        active_sh_bases,
+        total_sh_bases,
+        static_cast<float>(width),
+        static_cast<float>(height),
+        focal_x,
+        focal_y,
+        center_x,
+        center_y,
+        near_plane,
+        far_plane
+    );
     CHECK_CUDA(config::debug, "preprocess")
 
     int n_visible_primitives;
@@ -192,37 +183,29 @@ std::tuple<int, int, int> faster_gs::rasterization::forward(
     int n_buckets;
     cudaMemcpy(&n_buckets, tile_buffers.buckets_offset + n_tiles - 1, sizeof(uint), cudaMemcpyDeviceToHost);
 
-    char* bucket_buffers_blob = resize_bucket_buffers(required<BucketBuffers>(n_buckets, use_inv_depth_buffers));
-    BucketBuffers bucket_buffers = BucketBuffers::from_blob(bucket_buffers_blob, n_buckets, use_inv_depth_buffers);
+    char* bucket_buffers_blob = resize_bucket_buffers(required<BucketBuffers>(n_buckets));
+    BucketBuffers bucket_buffers = BucketBuffers::from_blob(bucket_buffers_blob, n_buckets);
 
-    auto launch_blend = [&](auto use_inv_depth_tag) {
-        constexpr bool use_inv_depth = decltype(use_inv_depth_tag)::value;
-        kernels::forward::blend_cu<true, use_inv_depth><<<grid, block>>>(
-            tile_buffers.instance_ranges,
-            tile_buffers.buckets_offset,
-            instance_buffers.primitive_indices.Current(),
-            primitive_buffers.mean2d,
-            primitive_buffers.conic_opacity,
-            primitive_buffers.color,
-            primitive_buffers.inv_depth,
-            bg_color,
-            image,
-            inv_depth,
-            metric_map,
-            metric_counts,
-            tile_buffers.final_transmittances,
-            tile_buffers.max_n_processed,
-            tile_buffers.n_processed,
-            bucket_buffers.tile_index,
-            bucket_buffers.color_transmittance,
-            bucket_buffers.inv_depth,
-            width,
-            height,
-            grid.x
-        );
-    };
-    if (use_inv_depth_buffers) launch_blend(std::true_type{});
-    else launch_blend(std::false_type{});
+    kernels::forward::blend_cu<true><<<grid, block>>>(
+        tile_buffers.instance_ranges,
+        tile_buffers.buckets_offset,
+        instance_buffers.primitive_indices.Current(),
+        primitive_buffers.mean2d,
+        primitive_buffers.conic_opacity,
+        primitive_buffers.color,
+        bg_color,
+        image,
+        metric_map,
+        metric_counts,
+        tile_buffers.final_transmittances,
+        tile_buffers.max_n_processed,
+        tile_buffers.n_processed,
+        bucket_buffers.tile_index,
+        bucket_buffers.color_transmittance,
+        width,
+        height,
+        grid.x
+    );
     CHECK_CUDA(config::debug, "blend")
 
     return {n_instances, n_buckets, instance_buffers.primitive_indices.selector};
@@ -274,13 +257,13 @@ void faster_gs::rasterization::forward_image(
     }
     else cudaMemset(tile_instance_ranges, 0, sizeof(uint2) * n_tiles);
 
-    char* primitive_buffers_blob = resize_primitive_buffers(required<PrimitiveBuffers>(n_primitives, false));
-    PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives, false);
+    char* primitive_buffers_blob = resize_primitive_buffers(required<PrimitiveBuffers>(n_primitives));
+    PrimitiveBuffers primitive_buffers = PrimitiveBuffers::from_blob(primitive_buffers_blob, n_primitives);
 
     cudaMemset(primitive_buffers.n_visible_primitives, 0, sizeof(uint));
     cudaMemset(primitive_buffers.n_instances, 0, sizeof(uint));
 
-    kernels::forward::preprocess_cu<false><<<div_round_up(n_primitives, config::block_size_preprocess), config::block_size_preprocess>>>(
+    kernels::forward::preprocess_cu<<<div_round_up(n_primitives, config::block_size_preprocess), config::block_size_preprocess>>>(
         means,
         scales,
         rotations,
@@ -296,7 +279,6 @@ void faster_gs::rasterization::forward_image(
         primitive_buffers.mean2d,
         primitive_buffers.conic_opacity,
         primitive_buffers.color,
-        primitive_buffers.inv_depth,
         primitive_buffers.n_visible_primitives,
         primitive_buffers.n_instances,
         n_primitives,
@@ -383,20 +365,17 @@ void faster_gs::rasterization::forward_image(
         CHECK_CUDA(config::debug, "extract_instance_ranges")
     }
 
-    kernels::forward::blend_cu<false, false><<<grid, block>>>(
+    kernels::forward::blend_cu<false><<<grid, block>>>(
         tile_instance_ranges,
         nullptr,
         instance_buffers.primitive_indices.Current(),
         primitive_buffers.mean2d,
         primitive_buffers.conic_opacity,
         primitive_buffers.color,
-        primitive_buffers.inv_depth,
         bg_color,
         image,
-        nullptr,
         metric_map,
         metric_counts,
-        nullptr,
         nullptr,
         nullptr,
         nullptr,

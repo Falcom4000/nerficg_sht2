@@ -12,7 +12,7 @@ namespace cg = cooperative_groups;
 
 namespace faster_gs::rasterization::kernels::backward {
 
-    template <bool update_densification_info, bool use_inv_depth_grad>
+    template <bool update_densification_info>
     __global__ void preprocess_backward_cu(
         float3* __restrict__ means,
         float3* __restrict__ scales,
@@ -34,7 +34,6 @@ namespace faster_gs::rasterization::kernels::backward {
         const float* __restrict__ grad_conic,
         const float* __restrict__ grad_opacities,
         const float3* __restrict__ grad_colors,
-        const float* __restrict__ grad_inv_depths,
         float* __restrict__ densification_info,
         const uint n_primitives,
         const uint active_sh_bases,
@@ -198,9 +197,6 @@ namespace faster_gs::rasterization::kernels::backward {
             j22 * dL_dmean2d.y,
             -j11 * x * dL_dmean2d.x - j22 * y * dL_dmean2d.y
         );
-        if constexpr (use_inv_depth_grad) {
-            dL_dmean3d_cam.z -= grad_inv_depths[primitive_idx] / fmaxf(depth * depth, 1e-12f);
-        }
 
         // add mean3d camera space gradient from J while accounting for clipping
         const bool valid_x = x >= clip_left && x <= clip_right;
@@ -261,7 +257,7 @@ namespace faster_gs::rasterization::kernels::backward {
     }
 
     // based on https://github.com/humansensinglab/taming-3dgs/blob/fd0f7d9edfe135eb4eefd3be82ee56dada7f2a16/submodules/diff-gaussian-rasterization/cuda_rasterizer/backward.cu#L404
-    template <bool update_densification_info, bool use_inv_depth_grad>
+    template <bool update_densification_info>
     __global__ void blend_backward_cu(
         const uint2* __restrict__ tile_instance_ranges,
         const uint* __restrict__ tile_bucket_offsets,
@@ -269,24 +265,19 @@ namespace faster_gs::rasterization::kernels::backward {
         const float2* __restrict__ primitive_mean2d,
         const float4* __restrict__ primitive_conic_opacity,
         const float3* __restrict__ primitive_color,
-        const float* __restrict__ primitive_inv_depth,
         const float3* __restrict__ bg_color,
         const float* __restrict__ grad_image,
-        const float* __restrict__ grad_inv_depth,
         const float* __restrict__ image,
-        const float* __restrict__ inv_depth,
         const float* __restrict__ tile_final_transmittances,
         const uint* __restrict__ tile_max_n_processed,
         const uint* __restrict__ tile_n_processed,
         const uint* __restrict__ bucket_tile_index,
         const float4* __restrict__ bucket_color_transmittance,
-        const float* __restrict__ bucket_inv_depth,
         float2* __restrict__ grad_mean2d,
         float2* __restrict__ grad_mean2d_abs,
         float* __restrict__ grad_conic,
         float* __restrict__ grad_opacity,
         float3* __restrict__ grad_colors,
-        float* __restrict__ grad_inv_depths,
         const uint n_primitives,
         const uint width,
         const uint height,
@@ -314,7 +305,6 @@ namespace faster_gs::rasterization::kernels::backward {
         float3 conic = {0.0f, 0.0f, 0.0f};
         float opacity = 0.0f;
         float3 color = {0.0f, 0.0f, 0.0f};
-        float inv_depth_primitive = 0.0f;
         float3 color_grad_factor = {0.0f, 0.0f, 0.0f};
         if (valid_primitive) {
             primitive_idx = instance_primitive_indices[instance_idx];
@@ -324,9 +314,6 @@ namespace faster_gs::rasterization::kernels::backward {
             opacity = conic_opacity.w;
             const float3 color_unclamped = primitive_color[primitive_idx];
             color = fmaxf(color_unclamped, 0.0f);
-            if constexpr (use_inv_depth_grad) {
-                inv_depth_primitive = primitive_inv_depth[primitive_idx];
-            }
             if (color_unclamped.x >= 0.0f) color_grad_factor.x = 1.0f;
             if (color_unclamped.y >= 0.0f) color_grad_factor.y = 1.0f;
             if (color_unclamped.z >= 0.0f) color_grad_factor.z = 1.0f;
@@ -342,7 +329,6 @@ namespace faster_gs::rasterization::kernels::backward {
         float3 dL_dconic_accum = {0.0f, 0.0f, 0.0f};
         float dL_dopacity_accum = 0.0f;
         float3 dL_dcolor_accum = {0.0f, 0.0f, 0.0f};
-        float dL_dinv_depth_accum = 0.0f;
 
         // tile metadata
         const uint2 tile_coords = {tile_idx % grid_width, tile_idx / grid_width};
@@ -350,20 +336,14 @@ namespace faster_gs::rasterization::kernels::backward {
 
         uint last_contributor;
         float3 accumulated_remainder;
-        float accumulated_inv_depth_remainder;
         float transmittance;
         float3 grad_color_pixel;
-        float grad_inv_depth_pixel;
         float grad_alpha_common;
 
         bucket_color_transmittance += bucket_idx * config::block_size_blend;
-        if constexpr (use_inv_depth_grad) {
-            bucket_inv_depth += bucket_idx * config::block_size_blend;
-        }
         __shared__ uint collected_last_contributor[32];
         __shared__ float4 collected_color_pixel_after_transmittance[32];
         __shared__ float4 collected_grad_info_pixel[32];
-        __shared__ float2 collected_inv_depth_pixel_after_transmittance[32];
 
         // iterate over all pixels in the tile
         #pragma unroll
@@ -378,8 +358,6 @@ namespace faster_gs::rasterization::kernels::backward {
                     // final values from forward pass before background blend and the respective gradients
                     float3 color_pixel_w_bg = make_float3(0.0f);
                     float3 grad_color_pixel = make_float3(0.0f);
-                    float inv_depth_pixel = 0.0f;
-                    float grad_inv_depth_pixel = 0.0f;
                     float final_transmittance = 0.0f;
                     uint last_contributor = 0;
                     if (valid_pixel_load) {
@@ -387,16 +365,12 @@ namespace faster_gs::rasterization::kernels::backward {
                             image[pixel_idx],
                             image[n_pixels + pixel_idx],
                             image[2 * n_pixels + pixel_idx]
-                        );
-                        grad_color_pixel = make_float3(
+                    );
+                    grad_color_pixel = make_float3(
                             grad_image[pixel_idx],
                             grad_image[n_pixels + pixel_idx],
                             grad_image[2 * n_pixels + pixel_idx]
                         );
-                        if constexpr (use_inv_depth_grad) {
-                            inv_depth_pixel = inv_depth[pixel_idx];
-                            grad_inv_depth_pixel = grad_inv_depth[pixel_idx];
-                        }
                         final_transmittance = tile_final_transmittances[pixel_idx];
                         last_contributor = tile_n_processed[pixel_idx];
                     }
@@ -408,12 +382,6 @@ namespace faster_gs::rasterization::kernels::backward {
                         grad_color_pixel,
                         final_transmittance * -dot(grad_color_pixel, background)
                     );
-                    if constexpr (use_inv_depth_grad) {
-                        collected_inv_depth_pixel_after_transmittance[lane_idx] = make_float2(
-                            bucket_inv_depth[local_idx] - inv_depth_pixel,
-                            grad_inv_depth_pixel
-                        );
-                    }
                     collected_last_contributor[lane_idx] = last_contributor;
                 }
                 warp.sync();
@@ -424,16 +392,10 @@ namespace faster_gs::rasterization::kernels::backward {
                 accumulated_remainder.x = warp.shfl_up(accumulated_remainder.x, 1);
                 accumulated_remainder.y = warp.shfl_up(accumulated_remainder.y, 1);
                 accumulated_remainder.z = warp.shfl_up(accumulated_remainder.z, 1);
-                if constexpr (use_inv_depth_grad) {
-                    accumulated_inv_depth_remainder = warp.shfl_up(accumulated_inv_depth_remainder, 1);
-                }
                 transmittance = warp.shfl_up(transmittance, 1);
                 grad_color_pixel.x = warp.shfl_up(grad_color_pixel.x, 1);
                 grad_color_pixel.y = warp.shfl_up(grad_color_pixel.y, 1);
                 grad_color_pixel.z = warp.shfl_up(grad_color_pixel.z, 1);
-                if constexpr (use_inv_depth_grad) {
-                    grad_inv_depth_pixel = warp.shfl_up(grad_inv_depth_pixel, 1);
-                }
                 grad_alpha_common = warp.shfl_up(grad_alpha_common, 1);
             }
 
@@ -454,11 +416,6 @@ namespace faster_gs::rasterization::kernels::backward {
                 const float4 color_pixel_after_transmittance = collected_color_pixel_after_transmittance[current_shmem_index];
                 accumulated_remainder = make_float3(color_pixel_after_transmittance);
                 transmittance = color_pixel_after_transmittance.w;
-                if constexpr (use_inv_depth_grad) {
-                    const float2 inv_depth_pixel_after_transmittance = collected_inv_depth_pixel_after_transmittance[current_shmem_index];
-                    accumulated_inv_depth_remainder = inv_depth_pixel_after_transmittance.x;
-                    grad_inv_depth_pixel = inv_depth_pixel_after_transmittance.y;
-                }
                 const float4 grad_info_pixel = collected_grad_info_pixel[current_shmem_index];
                 grad_color_pixel = make_float3(grad_info_pixel);
                 grad_alpha_common = grad_info_pixel.w;
@@ -479,27 +436,15 @@ namespace faster_gs::rasterization::kernels::backward {
             // color gradient
             const float3 dL_dcolor = blending_weight * grad_color_pixel * color_grad_factor;
             dL_dcolor_accum += dL_dcolor;
-            if constexpr (use_inv_depth_grad) {
-                dL_dinv_depth_accum += blending_weight * grad_inv_depth_pixel;
-            }
 
             accumulated_remainder += blending_weight * color;
-            if constexpr (use_inv_depth_grad) {
-                accumulated_inv_depth_remainder += blending_weight * inv_depth_primitive;
-            }
 
             // alpha gradient
             const float one_minus_alpha = 1.0f - alpha;
             const float one_minus_alpha_rcp = 1.0f / fmaxf(one_minus_alpha, config::one_minus_alpha_eps);
             const float dL_dalpha_from_color = dot(transmittance * color + accumulated_remainder * one_minus_alpha_rcp, grad_color_pixel);
-            float dL_dalpha_from_inv_depth = 0.0f;
-            if constexpr (use_inv_depth_grad) {
-                dL_dalpha_from_inv_depth = (
-                    transmittance * inv_depth_primitive + accumulated_inv_depth_remainder * one_minus_alpha_rcp
-                ) * grad_inv_depth_pixel;
-            }
             const float dL_dalpha_from_alpha = grad_alpha_common * one_minus_alpha_rcp;
-            const float dL_dalpha = dL_dalpha_from_color + dL_dalpha_from_inv_depth + dL_dalpha_from_alpha;
+            const float dL_dalpha = dL_dalpha_from_color + dL_dalpha_from_alpha;
             // opacity gradient
             const float dL_dopacity = gaussian * dL_dalpha;
             dL_dopacity_accum += dL_dopacity;
@@ -540,9 +485,6 @@ namespace faster_gs::rasterization::kernels::backward {
             atomicAdd(&grad_colors[primitive_idx].x, dL_dcolor_accum.x);
             atomicAdd(&grad_colors[primitive_idx].y, dL_dcolor_accum.y);
             atomicAdd(&grad_colors[primitive_idx].z, dL_dcolor_accum.z);
-            if constexpr (use_inv_depth_grad) {
-                atomicAdd(&grad_inv_depths[primitive_idx], dL_dinv_depth_accum);
-            }
         }
     }
 
