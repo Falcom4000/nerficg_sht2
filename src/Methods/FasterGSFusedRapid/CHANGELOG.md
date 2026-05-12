@@ -1,5 +1,178 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.24 - 2026-05-12
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_24_15k_meanlr15k/*.yaml`, copied from v0.4.22.
+- Kept the v0.4.22 15k schedule: `NUM_ITERATIONS=15000`, `DENSIFICATION_END_ITERATION=12000`, `MORTON_ORDERING_END_ITERATION=12000`, and VCP at `12500/13500/14500`.
+- Changed `OPTIMIZER.LEARNING_RATE_MEANS_MAX_STEPS` from `30000` to `15000`.
+- Added explicit default VCP execution fields, `FASTGS_PRUNING_CONFIRMATION_PASSES=1` and `FASTGS_PRUNING_BUDGET_FRACTION=1.0`, to keep v0.4.22 pruning semantics while making the new controls visible in config.
+
+Motivation:
+
+- v0.4.22 reaches the 80s speed target but loses about `0.158dB` PSNR relative to v0.4.17.
+- The mean-position LR schedule still decays over the original 30k horizon even when training only 15k iterations.
+- This config tests whether matching the LR decay horizon to the short schedule can recover quality without increasing iteration count.
+
+Verification:
+
+- Full 7-scene repeat-3 benchmark started with `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_24_15k_meanlr15k --repeats 3 --suite-name fastergsfusedrapid_v0_4_24_15k_meanlr15k_r3`.
+- Results pending at the time of this commit.
+
+## fastergsfusedrapid-v0.4.23 - 2026-05-12
+
+Code changes:
+
+- Added VCP prune confirmation state in `Model.py`.
+- Kept VCP state synchronized with Gaussian parameters across `prune`, `sort`, and clone/split append operations.
+- Extended `prune_by_multiview_score` with:
+  - `confirmation_passes`, default `1`, preserving old direct-threshold VCP semantics.
+  - `budget_fraction`, default `1.0`, preserving old delete-all-confirmed behavior.
+- Wired the new VCP controls through `Trainer.py` as `FASTGS_PRUNING_CONFIRMATION_PASSES` and `FASTGS_PRUNING_BUDGET_FRACTION`.
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_23_async_budgeted_vcp_17k/*.yaml`, copied from the recommended v0.4.17 schedule baseline.
+- Set `FASTGS_PRUNING_CONFIRMATION_PASSES=2`.
+- Set `FASTGS_PRUNING_BUDGET_FRACTION=0.5`.
+- Kept the v0.4.17 schedule: `NUM_ITERATIONS=17000`, `DENSIFICATION_END_ITERATION=14000`, `MORTON_ORDERING_END_ITERATION=14000`, and VCP at `14500/15500/16500`.
+
+Documentation:
+
+- Updated `fastergsfusedrapid_paper_body_zh.md` with the "unified objective + action-specific clocks" formulation.
+- Added the delayed/budgeted VCP equations and clarified that default parameters keep old VCP semantics.
+
+Verification:
+
+- `/usr/local/miniconda3/envs/nerficg/bin/python -m py_compile src/Methods/FasterGSFusedRapid/Model.py src/Methods/FasterGSFusedRapid/Trainer.py`
+- CUDA smoke test for delayed/budgeted VCP: two VCP passes with `confirmation_passes=2` and `budget_fraction=0.5` prune exactly half of the confirmed candidates and keep `_vcp_prune_hits` synchronized after tensor compaction.
+- Bicycle benchmark, one repeat: `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_23_async_budgeted_vcp_17k --repeats 1 --suite-name fastergsfusedrapid_v0_4_23_async_budgeted_vcp_17k_bicycle_r1_run2 --scenes bicycle`
+- Bicycle benchmark, two additional repeats: `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_23_async_budgeted_vcp_17k --repeats 2 --suite-name fastergsfusedrapid_v0_4_23_async_budgeted_vcp_17k_bicycle_r2 --scenes bicycle`
+- Full 7-scene repeat-3 benchmark: `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_23_async_budgeted_vcp_17k --repeats 3 --suite-name fastergsfusedrapid_v0_4_23_async_budgeted_vcp_17k_r3`
+- Benchmark outputs:
+  - `output/benchmarks/fastergsfusedrapid_v0_4_23_async_budgeted_vcp_17k_bicycle_r1_run2`
+  - `output/benchmarks/fastergsfusedrapid_v0_4_23_async_budgeted_vcp_17k_bicycle_r2`
+  - `output/benchmarks/fastergsfusedrapid_v0_4_23_async_budgeted_vcp_17k_r3`
+- `git diff --check`
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 128.4021s | 25.3100 | 0.7448 | 0.2984 | 1,491,955 | 4.8902GiB |
+
+Full 7-scene repeat-3 result:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 128.4967s | 25.3001 | 0.7441 | 0.2989 | 1,492,873 | 4.8918GiB |
+| bonsai | 3 | 80.8067s | 31.4461 | 0.9364 | 0.2582 | 413,964 | 5.7162GiB |
+| counter | 3 | 76.0116s | 28.4851 | 0.8947 | 0.2837 | 275,370 | 4.9943GiB |
+| garden | 3 | 86.6574s | 26.8155 | 0.8348 | 0.1917 | 867,562 | 2.9974GiB |
+| kitchen | 3 | 88.5137s | 30.7985 | 0.9186 | 0.1753 | 402,218 | 5.5879GiB |
+| room | 3 | 79.0686s | 31.2416 | 0.9120 | 0.3060 | 359,719 | 6.0463GiB |
+| stump | 3 | 88.3125s | 25.8339 | 0.7279 | 0.3022 | 1,186,660 | 2.5757GiB |
+| mean | 21 | 89.6953s | 28.5601 | 0.8527 | 0.2594 | 714,052 | 4.6871GiB |
+
+Compared with v0.4.17 bicycle:
+
+| version | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v0.4.17 early VCP 17k | 129.7619s | 25.2965 | 0.7445 | 0.2990 | 1,463,113 | 4.8838GiB |
+| v0.4.23 delayed/budgeted VCP 17k | 128.4021s | 25.3100 | 0.7448 | 0.2984 | 1,491,955 | 4.8902GiB |
+
+Interpretation:
+
+- This implements the conservative-pruning side of the unified structural-controller derivation without merging add/prune intervals.
+- Default behavior remains unchanged for existing configs.
+- On bicycle, delayed/budgeted VCP slightly improves metrics and train time relative to v0.4.17, but final Gaussian count increases by about `28.8k`.
+- On the full 7-scene repeat-3 benchmark, v0.4.23 is slightly faster than v0.4.17 (`89.70s` vs `90.03s`) and slightly higher PSNR (`28.5601` vs `28.5336`), but it retains more Gaussians (`714k` vs `700k`).
+- This makes v0.4.23 a valid quality-preserving conservative-pruning variant, but not the 80s-speed direction.
+- The next experiment is v0.4.24, based on the v0.4.22 15k schedule with the mean-position LR decay horizon shortened from 30k to 15k to test whether short-schedule quality can be recovered without increasing iteration count.
+
+## fastergsfusedrapid-v0.4.22 - 2026-05-12
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_22_early_vcp_15k/*.yaml`, copied from v0.4.21.
+- Reduced `TRAINING.NUM_ITERATIONS` from `15500` to `15000`.
+- Moved `DENSIFICATION_END_ITERATION` from `12500` to `12000`.
+- Moved `MORTON_ORDERING_END_ITERATION` from `12500` to `12000`.
+- Moved active VCP pruning to `12500/13500/14500` with `FASTGS_PRUNING_START_ITERATION=12500`, `FASTGS_PRUNING_END_ITERATION=15000`, and `FASTGS_PRUNING_INTERVAL=1000`.
+
+Verification:
+
+- Benchmark: `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_22_early_vcp_15k --repeats 3 --suite-name fastergsfusedrapid_v0_4_22_early_vcp_15k_r3_nerficg`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_22_early_vcp_15k_r3_nerficg`.
+
+| scene | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 115.5279s | 25.1823 | 0.7397 | 0.3027 | 1,414,468 | 4.8650GiB |
+| bonsai | 73.2647s | 31.0698 | 0.9343 | 0.2614 | 401,362 | 5.7147GiB |
+| counter | 69.1139s | 28.3165 | 0.8927 | 0.2874 | 266,477 | 4.9930GiB |
+| garden | 77.3921s | 26.6426 | 0.8305 | 0.1958 | 856,123 | 2.9983GiB |
+| kitchen | 80.0547s | 30.6611 | 0.9170 | 0.1781 | 392,105 | 5.5863GiB |
+| room | 72.2229s | 30.9060 | 0.9097 | 0.3092 | 340,484 | 6.0448GiB |
+| stump | 78.1405s | 25.8519 | 0.7279 | 0.3044 | 1,150,087 | 2.5716GiB |
+| mean | 80.8167s | 28.3757 | 0.8503 | 0.2627 | 688,729 | 4.6820GiB |
+
+Compared with v0.4.21:
+
+| version | mean train | mean PSNR | mean SSIM | mean LPIPS | mean n_gaussians | mean VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v0.4.21 15.5k early VCP | 82.7804s | 28.4250 | 0.8507 | 0.2621 | 695,626 | 4.6842GiB |
+| v0.4.22 15k early VCP | 80.8167s | 28.3757 | 0.8503 | 0.2627 | 688,729 | 4.6820GiB |
+
+Interpretation:
+
+- The 15k schedule reaches the requested speed target: mean train time is `1.9637s` faster than v0.4.21 and `4.0847s` faster than v0.4.19.
+- Quality drops modestly from v0.4.21: PSNR `-0.0493`, SSIM `-0.0004`, LPIPS `+0.0006`.
+- Final Gaussian count drops by about `6.9k`; the speedup comes mostly from the shorter schedule, not a major model-size reduction.
+- Treat v0.4.22 as an 80s speed-boundary probe, not the recommended paper baseline. It is `0.1579dB` lower than v0.4.17 PSNR, which is too large to dismiss as repeat noise.
+- Keep v0.4.17 as the recommended schedule baseline for paper-facing comparisons.
+
+## fastergsfusedrapid-v0.4.21 - 2026-05-12
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_21_early_vcp_15500/*.yaml`, copied from v0.4.19.
+- Reduced `TRAINING.NUM_ITERATIONS` from `16000` to `15500`.
+- Moved `DENSIFICATION_END_ITERATION` from `13000` to `12500`.
+- Moved `MORTON_ORDERING_END_ITERATION` from `13000` to `12500`.
+- Moved active VCP pruning to `13000/14000/15000` with `FASTGS_PRUNING_START_ITERATION=13000`, `FASTGS_PRUNING_END_ITERATION=15500`, and `FASTGS_PRUNING_INTERVAL=1000`.
+
+Verification:
+
+- Benchmark: `python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_21_early_vcp_15500 --repeats 3 --suite-name fastergsfusedrapid_v0_4_21_early_vcp_15500_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_21_early_vcp_15500_r3`.
+
+| scene | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 119.7633s | 25.1924 | 0.7393 | 0.3029 | 1,436,089 | 4.8791GiB |
+| bonsai | 75.6719s | 31.2240 | 0.9352 | 0.2607 | 407,702 | 5.7147GiB |
+| counter | 70.7922s | 28.3188 | 0.8922 | 0.2868 | 270,214 | 4.9929GiB |
+| garden | 79.1988s | 26.7109 | 0.8340 | 0.1942 | 857,246 | 2.9965GiB |
+| kitchen | 81.7617s | 30.6122 | 0.9161 | 0.1785 | 393,226 | 5.5863GiB |
+| room | 72.5047s | 31.1065 | 0.9116 | 0.3076 | 344,398 | 6.0448GiB |
+| stump | 79.7702s | 25.8102 | 0.7266 | 0.3040 | 1,160,508 | 2.5751GiB |
+| mean | 82.7804s | 28.4250 | 0.8507 | 0.2621 | 695,626 | 4.6842GiB |
+
+Compared with v0.4.19 and v0.4.20:
+
+| version | mean train | mean PSNR | mean SSIM | mean LPIPS | mean n_gaussians | mean VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v0.4.19 early VCP 16k | 84.9014s | 28.4671 | 0.8514 | 0.2612 | 697,606 | 4.6853GiB |
+| v0.4.20 no VCP 16k | 85.8662s | 28.4574 | 0.8514 | 0.2619 | 730,455 | 4.6861GiB |
+| v0.4.21 early VCP 15.5k | 82.7804s | 28.4250 | 0.8507 | 0.2621 | 695,626 | 4.6842GiB |
+
+Interpretation:
+
+- The 15.5k schedule improves mean train time by `2.1210s` over v0.4.19 and `3.0858s` over v0.4.20.
+- Quality remains close to v0.4.19: PSNR `-0.0421`, SSIM `-0.0007`, LPIPS `+0.0009`.
+- Final Gaussian count is nearly unchanged from v0.4.19 and far below v0.4.20 no-VCP, so active early VCP remains the preferred short-schedule direction.
+- Compared with the recommended v0.4.17 baseline, PSNR is `0.1086dB` lower. This is useful as a speed/quality boundary point, but too large a PSNR drop for the default paper baseline.
+
 ## fastergsfusedrapid-v0.4.20 - 2026-05-12
 
 Config changes:

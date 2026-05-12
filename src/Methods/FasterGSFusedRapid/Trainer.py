@@ -35,6 +35,8 @@ from Optim.Samplers.DatasetSamplers import DatasetSampler
     FASTGS_PRUNING_INTERVAL=3_000,
     FASTGS_PRUNING_MIN_OPACITY=0.1,
     FASTGS_PRUNING_SCORE_THRESHOLD=0.9,
+    FASTGS_PRUNING_CONFIRMATION_PASSES=1,
+    FASTGS_PRUNING_BUDGET_FRACTION=1.0,
     MORTON_ORDERING_INTERVAL=5000,  # lowering to 2500 or 1000 may improve performance when number of Gaussians is high
     MORTON_ORDERING_END_ITERATION=15000,
     USE_RANDOM_BACKGROUND_COLOR=False,  # prevents the model from overfitting to the background color
@@ -287,6 +289,8 @@ class FasterGSFusedRapidTrainer(GuiTrainer):
             min_opacity=self.FASTGS_PRUNING_MIN_OPACITY,
             pruning_score=pruning_score,
             score_threshold=self.FASTGS_PRUNING_SCORE_THRESHOLD,
+            confirmation_passes=self.FASTGS_PRUNING_CONFIRMATION_PASSES,
+            budget_fraction=self.FASTGS_PRUNING_BUDGET_FRACTION,
         )
         if self.requires_empty_cache:
             torch.cuda.empty_cache()

@@ -108,6 +108,7 @@ class Gaussians(torch.nn.Module):
         self.register_buffer('_scales', None)
         self.register_buffer('_rotations', None)
         self.register_buffer('_opacities', None)
+        self.register_buffer('_vcp_prune_hits', None)
         self._densification_info = None
         self.percent_dense = 0.0
         self.training_cameras_extent = 1.0
@@ -212,6 +213,7 @@ class Gaussians(torch.nn.Module):
         self.moments_scales = torch.zeros(*self._scales.shape, 2, dtype=torch.float32, device='cuda')
         self.moments_rotations = torch.zeros(*self._rotations.shape, 2, dtype=torch.float32, device='cuda')
         self.moments_opacities = torch.zeros(*self._opacities.shape, 2, dtype=torch.float32, device='cuda')
+        self._vcp_prune_hits = torch.zeros(self._means.shape[0], dtype=torch.int16, device='cuda')
 
     def initialize_from_point_cloud(self, point_cloud: BasicPointCloud) -> None:
         """Initializes the model from a point cloud."""
@@ -338,6 +340,8 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = self.moments_opacities[valid_mask].contiguous()
         self.moments_scales = self.moments_scales[valid_mask].contiguous()
         self.moments_rotations = self.moments_rotations[valid_mask].contiguous()
+        if self._vcp_prune_hits is not None:
+            self._vcp_prune_hits = self._vcp_prune_hits[valid_mask].contiguous()
 
         if self._densification_info is not None:
             self._densification_info = self._densification_info[:, valid_mask].contiguous()
@@ -357,6 +361,8 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = self.moments_opacities[ordering].contiguous()
         self.moments_scales = self.moments_scales[ordering].contiguous()
         self.moments_rotations = self.moments_rotations[ordering].contiguous()
+        if self._vcp_prune_hits is not None:
+            self._vcp_prune_hits = self._vcp_prune_hits[ordering].contiguous()
 
         if self._densification_info is not None:
             self._densification_info = self._densification_info[:, ordering].contiguous()
@@ -420,6 +426,8 @@ class Gaussians(torch.nn.Module):
         self.moments_opacities = torch.cat([self.moments_opacities, torch.zeros((n_new_gaussians, *self.moments_opacities.shape[1:]), dtype=torch.float32, device='cuda')])
         self.moments_scales = torch.cat([self.moments_scales, torch.zeros((n_new_gaussians, *self.moments_scales.shape[1:]), dtype=torch.float32, device='cuda')])
         self.moments_rotations = torch.cat([self.moments_rotations, torch.zeros((n_new_gaussians, *self.moments_rotations.shape[1:]), dtype=torch.float32, device='cuda')])
+        if self._vcp_prune_hits is not None:
+            self._vcp_prune_hits = torch.cat([self._vcp_prune_hits, torch.zeros(n_new_gaussians, dtype=torch.int16, device='cuda')])
 
         # if it was set, densification info is now no longer valid
         self._densification_info = None
@@ -456,10 +464,50 @@ class Gaussians(torch.nn.Module):
         order = torch.argsort(morton_encoding)
         self.sort(order)
 
-    def prune_by_multiview_score(self, min_opacity: float, pruning_score: torch.Tensor, score_threshold: float) -> None:
+    def prune_by_multiview_score(
+        self,
+        min_opacity: float,
+        pruning_score: torch.Tensor,
+        score_threshold: float,
+        confirmation_passes: int = 1,
+        budget_fraction: float = 1.0,
+    ) -> None:
         """Prunes Gaussians using FastGS multi-view pruning score."""
-        prune_mask = self.opacities.flatten() < min_opacity
-        prune_mask |= pruning_score[:prune_mask.shape[0]].to(prune_mask.device) > score_threshold
+        confirmation_passes = max(1, int(confirmation_passes))
+        budget_fraction = float(budget_fraction)
+        n_gaussians = self._means.shape[0]
+        score = torch.zeros(n_gaussians, dtype=torch.float32, device=self._means.device)
+        score_count = min(n_gaussians, pruning_score.numel())
+        score[:score_count] = pruning_score.flatten()[:score_count].to(score.device, dtype=torch.float32)
+
+        low_opacity_mask = self.opacities.flatten() < min_opacity
+        candidate_mask = low_opacity_mask | (score > score_threshold)
+        if confirmation_passes > 1:
+            hits = self._vcp_prune_hits
+            if hits is None or hits.shape[0] != n_gaussians:
+                hits = torch.zeros(n_gaussians, dtype=torch.int16, device=self._means.device)
+            updated_hits = (hits + candidate_mask.to(hits.dtype)).clamp_max(confirmation_passes)
+            self._vcp_prune_hits = torch.where(candidate_mask, updated_hits, torch.zeros_like(updated_hits))
+            prune_mask = self._vcp_prune_hits >= confirmation_passes
+        else:
+            prune_mask = candidate_mask
+
+        if 0.0 < budget_fraction < 1.0:
+            n_candidates = int(prune_mask.sum().item())
+            budget = int(math.ceil(budget_fraction * n_candidates))
+            if budget <= 0:
+                prune_mask = torch.zeros_like(prune_mask)
+            elif budget < n_candidates:
+                priority = score.clone()
+                priority[low_opacity_mask] = torch.maximum(
+                    priority[low_opacity_mask],
+                    torch.ones_like(priority[low_opacity_mask]),
+                )
+                candidate_indices = prune_mask.nonzero(as_tuple=False).flatten()
+                selected = torch.topk(priority[candidate_indices], k=budget, largest=True).indices
+                selected_mask = torch.zeros_like(prune_mask)
+                selected_mask[candidate_indices[selected]] = True
+                prune_mask = selected_mask
         self.prune(prune_mask)
 
     @torch.no_grad()
