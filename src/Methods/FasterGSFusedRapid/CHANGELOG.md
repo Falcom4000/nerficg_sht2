@@ -21,10 +21,32 @@ Verification:
 - Dry-run prior check: `python scripts/prepare_fast_converging_priors.py dataset/mipnerf360/bicycle --tasks anysplat --dry-run`
 - Smoke benchmark: `python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_14_anysplat_only_no_depth --repeats 1 --suite-name fastergsfusedrapid_v0_4_14_anysplat_only_no_depth_smoke4 --scenes bicycle`
 - Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_14_anysplat_only_no_depth_smoke4`.
+- Full benchmark: `python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_14_anysplat_only_no_depth --repeats 3 --suite-name fastergsfusedrapid_v0_4_14_anysplat_only_no_depth_r3`
+- Full suite output: `output/benchmarks/fastergsfusedrapid_v0_4_14_anysplat_only_no_depth_r3`.
 
 | scene | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | bicycle | 135.5439s | 25.3055 | 0.7450 | 0.2974 | 1,530,661 | 4.8935GiB |
+
+All-scene repeat-3 result:
+
+| scene | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 135.7220s | 25.3103 | 0.7453 | 0.2971 | 1,534,332 | 4.8970GiB |
+| bonsai | 84.8711s | 31.3792 | 0.9357 | 0.2575 | 422,402 | 5.7147GiB |
+| counter | 79.3743s | 28.3819 | 0.8939 | 0.2839 | 281,798 | 4.9930GiB |
+| garden | 91.1657s | 26.8063 | 0.8356 | 0.1894 | 885,973 | 2.9974GiB |
+| kitchen | 92.1517s | 30.8779 | 0.9192 | 0.1743 | 411,060 | 5.5863GiB |
+| room | 82.7529s | 31.2651 | 0.9128 | 0.3046 | 376,021 | 6.0448GiB |
+| stump | 94.3442s | 25.8549 | 0.7292 | 0.3016 | 1,216,121 | 2.5811GiB |
+| mean | 94.3403s | 28.5537 | 0.8531 | 0.2584 | 732,530 | 4.6878GiB |
+
+Compared with v0.4.12 all-scene repeat-3:
+
+| version | mean train | mean PSNR | mean SSIM | mean LPIPS | mean n_gaussians | mean VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v0.4.12 | 96.9419s | 28.5738 | 0.8532 | 0.2583 | 730,799 | 4.7432GiB |
+| v0.4.14 | 94.3403s | 28.5537 | 0.8531 | 0.2584 | 732,530 | 4.6878GiB |
 
 Profile windows:
 
@@ -35,7 +57,8 @@ Interpretation:
 
 - Removing the depth backend restores a smaller RGB-only ABI and removes dead inverse-depth buffer/kernel branches.
 - The single bicycle smoke run is faster than the v0.4.12/v0.4.13 bicycle repeat means while quality stays in the normal AnySplat-only range.
-- Full all-scene repeat-3 verification remains the next benchmark step; v0.4.12 is still the last completed all-scene repeat-3 baseline.
+- The full all-scene repeat-3 run is `2.6016s` faster than v0.4.12 on mean train time, while PSNR changes by `-0.0201`, SSIM by `-0.0001`, and LPIPS by `+0.0001`.
+- Gaussian count is effectively unchanged from v0.4.12 on the all-scene mean, so the speed difference is not caused by a substantial reduction in final model size.
 
 ## fastergsfusedrapid-v0.4.13 - 2026-05-11
 
