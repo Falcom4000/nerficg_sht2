@@ -1,5 +1,51 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.28 rejected local experiment - 2026-05-12
+
+Tested code changes:
+
+- Added a direct `0.8 * L1 + 0.2 * DSSIM` loss fast path in `Loss.py` when W&B logging is disabled.
+- Kept the generic `BaseLoss` metric-container path for W&B-enabled training, so training/validation logging behavior is preserved when metrics are requested.
+- Reverted this code path after benchmark because it did not pass the strict PSNR gate.
+
+Local config:
+
+- Tested with local `configs/fastergsfusedrapid_v0_4_28_direct_loss_17k/*.yaml`, copied from v0.4.27.
+- Kept all training, densification, Morton ordering, VCP, AnySplat, and optimizer hyperparameters unchanged.
+- The local config directory is not retained in git because the code change was rejected.
+
+Motivation:
+
+- v0.4.27 is the current strict-quality baseline with quality floor `28.5726 - 0.01 = 28.5626` PSNR.
+- Benchmark configs run with `TRAINING.WANDB.ACTIVATE=false`; in that mode, the generic loss container does not need to build metric dictionaries or maintain running metric state for logging.
+- This version targets Python-side loss overhead without changing the RGB loss formula or CUDA training backend.
+
+Verification:
+
+- `/usr/local/miniconda3/envs/nerficg/bin/python -m py_compile src/Methods/FasterGSFusedRapid/Loss.py`
+- Full 7-scene repeat-3 benchmark:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_28_direct_loss_17k --repeats 3 --suite-name fastergsfusedrapid_v0_4_28_direct_loss_17k_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_28_direct_loss_17k_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 128.1937s | 25.2962 | 0.7442 | 0.2989 | 1,488,138 | 4.8845GiB |
+| bonsai | 3 | 80.3459s | 31.4180 | 0.9358 | 0.2583 | 414,436 | 5.7162GiB |
+| counter | 3 | 75.4724s | 28.4808 | 0.8947 | 0.2842 | 275,812 | 4.9943GiB |
+| garden | 3 | 85.0377s | 26.7645 | 0.8349 | 0.1910 | 873,352 | 3.0007GiB |
+| kitchen | 3 | 87.7911s | 30.7349 | 0.9178 | 0.1758 | 402,145 | 5.5879GiB |
+| room | 3 | 77.0362s | 31.2766 | 0.9119 | 0.3061 | 360,109 | 6.0464GiB |
+| stump | 3 | 86.4469s | 25.8310 | 0.7280 | 0.3023 | 1,185,410 | 2.5754GiB |
+| mean | 21 | 88.6177s | 28.5431 | 0.8525 | 0.2595 | 714,200 | 4.6865GiB |
+
+Interpretation:
+
+- v0.4.28 was faster than v0.4.27 (`88.62s` vs `88.99s`) but fell below the new strict quality floor (`28.5431 < 28.5626` PSNR).
+- Do not promote v0.4.28 and do not keep the direct loss fast path in the main code path.
+- Keep v0.4.27 as the current strict-quality baseline.
+
 ## fastergsfusedrapid-v0.4.27 - 2026-05-12
 
 Code changes:
