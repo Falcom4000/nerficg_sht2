@@ -1,5 +1,51 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.15 - 2026-05-12
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_15_early_vcp_18k/*.yaml`, copied from v0.4.14.
+- Kept `TRAINING.NUM_ITERATIONS=18000`.
+- Moved `DENSIFICATION_END_ITERATION` from `14900` to `14500`.
+- Moved `MORTON_ORDERING_END_ITERATION` from `15000` to `14500`.
+- Moved FastGS VCP pruning into the active training window: `FASTGS_PRUNING_START_ITERATION=15000`, `FASTGS_PRUNING_END_ITERATION=18000`, `FASTGS_PRUNING_INTERVAL=1000`.
+- Moved the late profiler window from `25000-25100` to `16000-16100`.
+
+Reason:
+
+- In v0.4.14, `FASTGS_PRUNING_START_ITERATION=18000` does not materially trigger under the 18k training schedule.
+- This config tests whether three post-densification VCP passes at 15k/16k/17k can reduce late Gaussian count without hurting quality.
+
+Verification:
+
+- Benchmark: `python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_15_early_vcp_18k --repeats 3 --suite-name fastergsfusedrapid_v0_4_15_early_vcp_18k_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_15_early_vcp_18k_r3`.
+
+| scene | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 135.6009s | 25.3498 | 0.7455 | 0.2971 | 1,476,364 | 4.8867GiB |
+| bonsai | 84.2426s | 31.3253 | 0.9358 | 0.2582 | 403,222 | 5.7147GiB |
+| counter | 79.6811s | 28.5032 | 0.8955 | 0.2829 | 269,494 | 4.9929GiB |
+| garden | 91.0747s | 26.6876 | 0.8343 | 0.1900 | 860,350 | 2.9938GiB |
+| kitchen | 93.0223s | 30.9470 | 0.9190 | 0.1745 | 391,933 | 5.5863GiB |
+| room | 82.4126s | 31.3762 | 0.9129 | 0.3050 | 351,319 | 6.0448GiB |
+| stump | 93.3365s | 25.7879 | 0.7270 | 0.3021 | 1,165,065 | 2.5723GiB |
+| mean | 94.1958s | 28.5681 | 0.8529 | 0.2586 | 702,535 | 4.6845GiB |
+
+Compared with v0.4.14:
+
+| version | mean train | mean PSNR | mean SSIM | mean LPIPS | mean n_gaussians | mean VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v0.4.14 | 94.3403s | 28.5537 | 0.8531 | 0.2584 | 732,530 | 4.6878GiB |
+| v0.4.15 | 94.1958s | 28.5681 | 0.8529 | 0.2586 | 702,535 | 4.6845GiB |
+
+Interpretation:
+
+- Early VCP reduced final Gaussian count by about `30k` on the all-scene mean and slightly reduced mean train time by `0.1444s`.
+- Quality stayed in the normal repeat-3 range: PSNR improved by `+0.0145`, SSIM changed by `-0.0002`, and LPIPS changed by `+0.0002`.
+- The speed gain is small because the added VCP score renders offset part of the reduced late backward cost.
+- Next config target: keep the same number of VCP passes but lower the pruning score threshold to test whether more aggressive pruning improves late training speed without quality loss.
+
 ## fastergsfusedrapid-v0.4.14 - 2026-05-12
 
 Implementation/config changes:
