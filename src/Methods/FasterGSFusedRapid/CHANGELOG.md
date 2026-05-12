@@ -1,5 +1,45 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.19 - 2026-05-12
+
+Config changes:
+
+- Added `configs/fastergsfusedrapid_v0_4_19_early_vcp_16k/*.yaml`, copied from v0.4.18.
+- Reduced `TRAINING.NUM_ITERATIONS` from `16500` to `16000`.
+- Moved `DENSIFICATION_END_ITERATION` from `13500` to `13000`.
+- Moved `MORTON_ORDERING_END_ITERATION` from `13500` to `13000`.
+- Moved active VCP pruning to `13500/14500/15500` with `FASTGS_PRUNING_START_ITERATION=13500`, `FASTGS_PRUNING_END_ITERATION=16000`, and `FASTGS_PRUNING_INTERVAL=1000`.
+
+Verification:
+
+- Benchmark: `python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_19_early_vcp_16k --repeats 3 --suite-name fastergsfusedrapid_v0_4_19_early_vcp_16k_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_19_early_vcp_16k_r3`.
+
+| scene | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 121.6135s | 25.2427 | 0.7422 | 0.3011 | 1,449,414 | 4.8857GiB |
+| bonsai | 77.0001s | 31.1475 | 0.9347 | 0.2606 | 404,785 | 5.7147GiB |
+| counter | 72.0567s | 28.4127 | 0.8934 | 0.2855 | 269,354 | 4.9930GiB |
+| garden | 81.3953s | 26.7341 | 0.8337 | 0.1925 | 856,661 | 2.9958GiB |
+| kitchen | 84.0003s | 30.7418 | 0.9174 | 0.1768 | 392,985 | 5.5863GiB |
+| room | 75.0267s | 31.1672 | 0.9116 | 0.3078 | 345,516 | 6.0448GiB |
+| stump | 83.2175s | 25.8235 | 0.7266 | 0.3038 | 1,164,525 | 2.5768GiB |
+| mean | 84.9014s | 28.4671 | 0.8514 | 0.2612 | 697,606 | 4.6853GiB |
+
+Compared with v0.4.18:
+
+| version | mean train | mean PSNR | mean SSIM | mean LPIPS | mean n_gaussians | mean VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| v0.4.18 | 87.7081s | 28.4887 | 0.8516 | 0.2608 | 698,388 | 4.6850GiB |
+| v0.4.19 | 84.9014s | 28.4671 | 0.8514 | 0.2612 | 697,606 | 4.6853GiB |
+
+Interpretation:
+
+- The 16k schedule improves mean train time by `2.8067s` over v0.4.18 and `9.4388s` over v0.4.14.
+- Quality continues to degrade gradually: PSNR `-0.0216`, SSIM `-0.0002`, LPIPS `+0.0004` versus v0.4.18.
+- Final Gaussian count is nearly unchanged from v0.4.18, so the improvement again comes from shorter training rather than model compaction.
+- Next config target: test a 16k no-early-VCP control to determine whether the active VCP passes are still worth their score-render overhead at this shorter schedule.
+
 ## fastergsfusedrapid-v0.4.18 - 2026-05-12
 
 Config changes:
