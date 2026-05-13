@@ -752,7 +752,19 @@ $$
 
 ### 6.5 可扩展信号：增加与删除
 
-上述推导也自然允许引入更多 reliability signals。当前实现已经使用 gradient、multi-view score、opacity 和 scale 作为原始观测信号，用 split replacement 等派生 mask 形成候选，并使用 delayed confirmation 与 pruning budget 作为删除执行策略；下面这些信号尚未实现，本文只作为未来扩展讨论。
+上述推导也自然允许引入更多 reliability signals。当前实现已经使用 gradient、
+multi-view score、opacity 和 scale 作为原始观测信号，用 split replacement 等派生 mask
+形成候选，并使用 delayed confirmation 与 pruning budget 作为删除执行策略。更完整的
+controller 可以把 6.1 中的四类因子分别接入增加和删除决策：
+
+| 因子组 | 可用于 densify 的证据 | 可用于 prune 的证据 | 设计含义 |
+| --- | --- | --- | --- |
+| 几何相关因子 | surface proximity、large covariance、高局部误差下的过大 scale | 远离表面、局部过密、低贡献的小尺度噪声点 | 区分“需要细化的粗结构”和“漂浮/冗余结构” |
+| 视觉贡献因子 | edge/detail mask、perceptual sensitivity、多视角高误差贡献 | 低 perceptual sensitivity、低 tile/pixel coverage、低 alpha contribution | 把 Gaussian budget 优先分配给人眼敏感和高频区域 |
+| 优化相关因子 | 高 gradient、稳定 gradient history、训练早期容量不足 | 长期低 gradient、低 opacity、与邻居高度相关 | 用学习动态判断容量是“不足”还是“冗余” |
+| 系统和资源因子 | budget 充足时放宽增长、稀疏区域优先 densify | Gaussian 数/VRAM/tile pressure 超预算时提高删除优先级 | 让质量目标和设备预算共同约束结构规模 |
+
+下面这些具体信号尚未进入当前 baseline，本文只把它们作为未来扩展讨论。它们应当经过单独 ablation，而不能直接写成当前方法贡献。
 
 一个更一般的 densification gate 可以写为
 
@@ -771,18 +783,21 @@ $$
 
 潜在额外信号包括：
 
-| 未实现信号 | 数学形式示例 | 动机 |
-| --- | --- | --- |
-| 视角覆盖度 | $r_i^{\mathrm{view}}=\frac{1}{K}\sum_{v\in\mathcal{V}_K}\mathbb{1}[h_{i,v}>0]$ | 区分“来自多个视角的稳定高误差”和“单视角 spike” |
-| 误差稳定性 | $r_i^{\mathrm{stab}}=-\operatorname{Var}_{v\in\mathcal{V}_K}(h_{i,v})$ | 避免某一个 view 极端误差主导 densification |
-| 透射率加权可见性 | $r_i^{\mathrm{vis}}=\sum_{v,\mathbf{p}}M_v(\mathbf{p})A_{i,v}(\mathbf{p})T_{i,v}(\mathbf{p})$ | 优先增加真正影响最终像素颜色的可见 Gaussian |
-| 局部冗余度 | $r_i^{\mathrm{red}}=\sum_{v,\mathbf{p}}M_v(\mathbf{p})A_{i,v}(\mathbf{p})n_v(\mathbf{p})$ | 如果高误差像素已有大量贡献 Gaussian，继续 densify 未必有效 |
-| 梯度历史稳定性 | $r_i^{\mathrm{hist}}=\operatorname{EMA}(r_i^{\mathrm{grad}})$ | 避免偶然一个 interval 的 gradient spike 触发结构增长 |
-| 低覆盖剪枝 | $q_i^{\mathrm{lowview}}=\mathbb{1}[r_i^{\mathrm{view}}<\tau_v]$ | 多数视角不可见的 Gaussian 更可能是漂浮或局部偶然解释 |
-| 冗余剪枝 | $q_i^{\mathrm{red}}=\mathbb{1}[r_i^{\mathrm{red}}>\tau_{\mathrm{red}}]\mathbb{1}[\sigma(o_i)<\tau_{\alpha}^{\mathrm{keep}}]$ | 在局部已有足够解释时，优先删除低 opacity 冗余点 |
-| 遮挡剪枝 | $q_i^{\mathrm{occ}}=\mathbb{1}[\sum A_{i,v}T_{i,v}<\tau_{\mathrm{vis}}]$ | 长期处于低 transmittance 后方的 Gaussian 对最终像素贡献低 |
-| score 波动剪枝 | $q_i^{\mathrm{var}}=\mathbb{1}[\operatorname{Var}_t(s_{i,t}^{-})>\tau_{\mathrm{var}}]$ | 只在少数 pass 异常高的 score 更像不稳定候选 |
-| 软删除验证 | $\Delta\mathcal{L}_i^{\mathrm{sup}}=\mathcal{L}(\sigma(o_i)\leftarrow \epsilon)-\mathcal{L}$ | 先临时压低 opacity，再确认是否真的可以删除 |
+| 因子组 | 未实现信号 | 数学形式示例 | 动机 |
+| --- | --- | --- | --- |
+| 几何 | 表面接近度 | $r_i^{\mathrm{surf}}=-d(\boldsymbol{\mu}_i,\mathcal{S})$ | 离可靠表面近的 Gaussian 更应保留；远离表面且低贡献时更像漂浮点 |
+| 几何 | 局部密度/冗余 | $r_i^{\mathrm{knn}}=\frac{1}{K}\sum_{j\in\mathcal{N}_K(i)}\|\boldsymbol{\mu}_i-\boldsymbol{\mu}_j\|_2$ | 过密区域可 prune/merge，稀疏且高误差区域可 densify |
+| 视觉 | 视角覆盖度 | $r_i^{\mathrm{view}}=\frac{1}{K}\sum_{v\in\mathcal{V}_K}\mathbb{1}[h_{i,v}>0]$ | 区分“来自多个视角的稳定高误差”和“单视角 spike” |
+| 视觉 | 误差稳定性 | $r_i^{\mathrm{stab}}=-\operatorname{Var}_{v\in\mathcal{V}_K}(h_{i,v})$ | 避免某一个 view 极端误差主导 densification |
+| 视觉 | 透射率加权可见性 | $r_i^{\mathrm{vis}}=\sum_{v,\mathbf{p}}M_v(\mathbf{p})A_{i,v}(\mathbf{p})T_{i,v}(\mathbf{p})$ | 优先增加真正影响最终像素颜色的可见 Gaussian |
+| 视觉 | perceptual/edge 权重 | $r_i^{\mathrm{perc}}=\sum_{v,\mathbf{p}}P_v(\mathbf{p})A_{i,v}(\mathbf{p})$ | 在 LPIPS/SSIM 敏感或边缘细节区域更保守删除、更积极细化 |
+| 优化 | 梯度历史稳定性 | $r_i^{\mathrm{hist}}=\operatorname{EMA}(r_i^{\mathrm{grad}})$ | 避免偶然一个 interval 的 gradient spike 触发结构增长 |
+| 优化 | 冗余剪枝 | $q_i^{\mathrm{red}}=\mathbb{1}[r_i^{\mathrm{knn}}<\tau_{\mathrm{near}}]\mathbb{1}[\sigma(o_i)<\tau_{\alpha}^{\mathrm{keep}}]$ | 在局部已有足够解释时，优先删除低 opacity 冗余点 |
+| 优化 | score 波动剪枝 | $q_i^{\mathrm{var}}=\mathbb{1}[\operatorname{Var}_t(s_{i,t}^{-})>\tau_{\mathrm{var}}]$ | 只在少数 pass 异常高的 score 更像不稳定候选 |
+| 系统 | 低覆盖剪枝 | $q_i^{\mathrm{lowcov}}=\mathbb{1}[c_i^{\mathrm{pixel}}<\tau_c]$ | 投影覆盖有效像素很少的 Gaussian 对最终图像贡献有限 |
+| 系统 | 资源预算优先级 | $q_i^{\mathrm{budget}}=\mathbb{1}[N>N_{\max}]\,\pi_i$ | 当 Gaussian 数或 VRAM 超预算时，按低贡献优先级提高删除强度 |
+| 系统 | temporal consistency | $r_i^{\mathrm{time}}=\operatorname{EMA}_{\tau}(h_{i,\tau})$ | 动态场景中跨时间帧稳定低贡献才更适合删除 |
+| 验证 | 软删除验证 | $\Delta\mathcal{L}_i^{\mathrm{sup}}=\mathcal{L}(\sigma(o_i)\leftarrow \epsilon)-\mathcal{L}$ | 先临时压低 opacity，再确认是否真的可以删除 |
 
 这些扩展与本文的预算受限结构编辑观点一致，但需要额外实验验证。为保持当前方法清晰和可复现，v0.4.17 baseline 不包含这些未实现信号。
 
