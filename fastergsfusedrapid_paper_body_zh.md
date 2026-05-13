@@ -508,6 +508,21 @@ FasterGSFusedRapid 引入 FastGS/RapidGS 风格的多视角 score。其核心思
 
 因此，当前方法不是简单的“高 score 增加、低 score 删除”。同一个 high-error contribution 需要结合 gradient、opacity、scale 和多视角稳定性解释：如果 high-error contribution 伴随高 gradient 和稳定可见性，它更像容量不足信号；如果它伴随低 opacity、异常 scale 或不稳定 coverage，它更像错误解释或低价值信号。
 
+从更一般的结构控制角度看，这些信号可以按来源归纳为四组。本文当前实现主要使用
+低成本、训练中自然产生的观测信号；其余信号作为未来 controller 的可选扩展，而不是
+当前实验结果的一部分。
+
+| 因子组 | 代表信号 | 对结构编辑的含义 | 当前使用情况 |
+| --- | --- | --- | --- |
+| 几何相关因子 | depth/surface proximity、local density、covariance/scale | 接近可靠表面的 Gaussian 删除风险更高；局部过密说明可能冗余；scale 过大时可能需要 split 或 prune | 当前使用 scale 参与 split/large-scale prune；depth、local density 和 merge-style redundancy 未启用 |
+| 视觉贡献因子 | perceptual importance、edge/detail region、view-dependent contribution、tile/pixel coverage | 高频边缘或多视角稳定贡献区域应保留或 densify；平滑、低覆盖、低 alpha contribution 区域可更激进 prune | 当前使用 multi-view score 和 metric counts；LPIPS/SSIM attribution、edge mask、coverage 输出未启用 |
+| 优化相关因子 | gradient magnitude、learning dynamics、training stage、redundancy/correlation | 高梯度说明容量不足，适合 clone/split；长期低梯度低贡献说明可 prune；训练早期偏增长，后期偏压缩 | 当前使用 signed/abs gradient、densification window、VCP window 和 split replacement；相关性/merge 未启用 |
+| 系统和资源因子 | memory budget、Gaussian count、VRAM、tile pressure、temporal consistency | 超过资源预算时应提高 prune 优先级或限制 densify；动态场景还需跨时间帧一致性 | 当前通过 schedule、budget fraction 和 Gaussian 数间接控制；temporal consistency 不属于静态 Mip-NeRF 360 设置 |
+
+这张表的作用是说明统一结构编辑框架的设计空间。当前 FasterGSFusedRapid 并不声称
+已经实现所有因子；为了可复现和避免额外开销，主线只保留 gradient、opacity、scale、
+multi-view score、VCP confirmation/budget 和阶段性 schedule 这些已验证信号。
+
 ### 6.2 从预算受限结构编辑推导多视角一致性
 
 我们可以把 densification 看成一个预算受限的结构编辑问题，而不是一个单纯的梯度阈值问题。给定当前 Gaussian 集合 $\mathcal{G}$，多视角训练目标为
