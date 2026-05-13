@@ -1057,6 +1057,20 @@ $$
 
 ## 8. 工程实现与训练稳定性细节
 
+本章只讨论已经落在当前代码主线中的工程实现。与原版 3DGS 相比，FasterGSFusedRapid 没有改变 tile-based splatting 的基本语义，而是在训练执行路径上做了三层改造：GPU rasterizer 层减少无效 instance、改善排序和 backward 调度；optimizer 层把 PyTorch 参数更新改成 fused CUDA update；系统层控制显存、缓存、profile 和 benchmark artifact。
+
+| 工程层 | 原版 3DGS 主要做法 | 当前实现 | 对速度/稳定性的影响 |
+| --- | --- | --- | --- |
+| Rasterizer preprocess | 投影 Gaussian，生成 tile/Gaussian pairs | 并行 preprocess，精确检查有效 tile，短覆盖顺序处理、长覆盖 warp cooperative 处理 | 减少无效 Gaussian-tile instance，并降低大 Gaussian 的单线程长尾 |
+| Sorting 与 tile range | 生成 key/value 并 radix sort，按 tile range blend | 保留 depth/tile radix sort，并拆出 instance ranges 与 bucket counts | 保持 3DGS front-to-back 语义，同时为 bucket backward 提供结构 |
+| Blend/backward 调度 | tile-local forward/backward | forward 保存 per-bucket color/transmittance，backward 以 bucket 为单位启动 | 重 tile 被拆成更多 work item，缓解 tile 间负载不均 |
+| Optimizer | PyTorch `.grad` + Adam step | `_Rasterize.backward` 直接调用 CUDA backward，并在 CUDA 中更新参数和 moments | 避免大 `.grad` tensor 和 Python optimizer 调度 |
+| 动态结构状态 | 参数由 PyTorch optimizer 管理 | prune/sort/split 时显式同步参数、moments、densification info、VCP hits | 防止动态 Gaussian 集合和 optimizer state 错配 |
+| 内存管理 | 依赖默认 allocator 和频繁 tensor realloc | `expandable_segments`、必要时 `empty_cache`、空 tensor 和 pose cache | 降低长实验中的碎片化和 Python/CUDA 边界开销 |
+| 可诊断性 | 主要看最终质量和训练时间 | 固定 profile windows，记录 render/loss/backward/densify-prune/Gaussian range | 能把速度变化归因到 kernel、结构编辑或 Python 调度 |
+
+这张表也限定了本文的工程 claim：当前主线实现了 multi-view score、bucket backward、fused Adam、Morton/cache/profile 等路径；FastGS 论文中的完整 compact box、1-minute 方案中的 Neural-Gaussian/pose refinement、Metric3D depth supervision 不属于当前维护版主贡献。
+
 ### 8.1 显存控制、CUDA allocator 与缓存
 
 FasterGSFusedRapid 的显存压力主要来自三类对象：Gaussian 参数和 Adam moments、rasterization 中间 buffers、训练图像和相机数据。当前配置使用 `PRELOADING_LEVEL=2` 将训练图像预加载到 VRAM，减少每步 CPU/GPU 数据搬运抖动；同时不预计算全部 rays，因为 3DGS rasterization 直接由相机参数、Gaussian 参数和 tile grid 驱动，提前展开 ray tensor 会额外占用显存且不进入主热路径。
