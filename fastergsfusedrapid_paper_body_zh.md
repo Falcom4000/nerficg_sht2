@@ -470,18 +470,9 @@ $$
 
 这种写法的重点是：理论上统一，工程上分解。我们没有把所有信号压成单一标量 $V_i$，因为单一 score 需要跨场景、跨 iteration 和跨 Gaussian population 校准，反而更难调参。
 
-## 6. 结构信号与增加策略
+### 5.5 结构控制因子 taxonomy
 
-### 6.1 结构控制信号
-
-原版 3DGS 的 densification 主要依赖 view-space gradient。这个信号简单有效，但它是局部的：一个 Gaussian 在某个视角上梯度大，并不一定说明它在多视角重建中稳定有用。遮挡边界、局部噪声、错误 opacity 或单视角高误差都可能触发冗余增长。
-
-FasterGSFusedRapid 引入 FastGS/RapidGS 风格的多视角 score。其核心思想是：一个 Gaussian 是否值得 clone/split，应同时满足两个条件：
-
-1. 它在训练过程中产生了足够大的 gradient signal；
-2. 它在多个训练视角的 high-error pixels 上确实有贡献。
-
-为了避免把不同层级的量混在一起，本文把结构控制相关量分成四类：
+为了避免把不同层级的量混在一起，本文把结构控制相关量先分成四类：
 
 | 类别 | 例子 | 回答的问题 | 当前角色 |
 | --- | --- | --- | --- |
@@ -490,27 +481,7 @@ FasterGSFusedRapid 引入 FastGS/RapidGS 风格的多视角 score。其核心思
 | 执行策略 | clone、split、delayed confirmation、top-$B$ budget pruning、stochastic sampling | 候选被怎样执行，什么时候执行，删多少？ | 控制结构编辑的动作、时钟和幅度 |
 | 未实现扩展信号 | view coverage、score stability、redundancy、occlusion visibility | 还能补充哪些可靠性证据？ | 只作为未来扩展，不进入当前结果 |
 
-删除方向还需要额外判据，因为 pruning 的错误代价更高。当前代码已经使用的剪枝判据包括：
-
-| 判据 | 依赖的原始信号/状态 | 作用 |
-| --- | --- | --- |
-| low-opacity mask | $\sigma(o_i)<\tau_o$ | 删除几乎不贡献颜色的 Gaussian |
-| large-scale mask | $r_i>\tau_rR_{\mathrm{scene}}$ | 删除过大的异常 splat |
-| multi-view VCP mask | $s_i^{-}>\tau_p$ | 标记后期多视角不一致候选 |
-| split replacement mask | split parent state | parent 被 children 替代后删除 |
-
-这些判据只回答“哪些 Gaussian 是候选”。真正执行删除时，还会叠加删除策略：
-
-| 删除策略 | 当前实现 | 作用 |
-| --- | --- | --- |
-| delayed confirmation | VCP hit counter | 要求候选连续多次出现，降低误删 |
-| pruning budget | top-$B$ confirmed candidates | 限制单次删除幅度 |
-
-因此，当前方法不是简单的“高 score 增加、低 score 删除”。同一个 high-error contribution 需要结合 gradient、opacity、scale 和多视角稳定性解释：如果 high-error contribution 伴随高 gradient 和稳定可见性，它更像容量不足信号；如果它伴随低 opacity、异常 scale 或不稳定 coverage，它更像错误解释或低价值信号。
-
-从更一般的结构控制角度看，这些信号可以按来源归纳为四组。本文当前实现主要使用
-低成本、训练中自然产生的观测信号；其余信号作为未来 controller 的可选扩展，而不是
-当前实验结果的一部分。
+从信号来源看，结构控制因子还可以归纳为几何、视觉贡献、优化动态和系统资源四组：
 
 | 因子组 | 代表信号 | 对结构编辑的含义 | 当前使用情况 |
 | --- | --- | --- | --- |
@@ -519,9 +490,28 @@ FasterGSFusedRapid 引入 FastGS/RapidGS 风格的多视角 score。其核心思
 | 优化相关因子 | gradient magnitude、learning dynamics、training stage、redundancy/correlation | 高梯度说明容量不足，适合 clone/split；长期低梯度低贡献说明可 prune；训练早期偏增长，后期偏压缩 | 当前使用 signed/abs gradient、densification window、VCP window 和 split replacement；相关性/merge 未启用 |
 | 系统和资源因子 | memory budget、Gaussian count、VRAM、tile pressure、temporal consistency | 超过资源预算时应提高 prune 优先级或限制 densify；动态场景还需跨时间帧一致性 | 当前通过 schedule、budget fraction 和 Gaussian 数间接控制；temporal consistency 不属于静态 Mip-NeRF 360 设置 |
 
-这张表的作用是说明统一结构编辑框架的设计空间。当前 FasterGSFusedRapid 并不声称
-已经实现所有因子；为了可复现和避免额外开销，主线只保留 gradient、opacity、scale、
-multi-view score、VCP confirmation/budget 和阶段性 schedule 这些已验证信号。
+这张 taxonomy 的作用是说明统一结构编辑框架的设计空间。当前 FasterGSFusedRapid 并不声称已经实现所有因子；为了可复现和避免额外开销，主线只保留 gradient、opacity、scale、multi-view score、VCP confirmation/budget 和阶段性 schedule 这些已验证信号。第 6 章只展开增长侧，第 7 章只展开删除侧。
+
+## 6. 增长因子与增加策略
+
+### 6.1 当前使用的增长因子
+
+原版 3DGS 的 densification 主要依赖 view-space gradient。这个信号简单有效，但它是局部的：一个 Gaussian 在某个视角上梯度大，并不一定说明它在多视角重建中稳定有用。遮挡边界、局部噪声、错误 opacity 或单视角高误差都可能触发冗余增长。
+
+FasterGSFusedRapid 引入 FastGS/RapidGS 风格的多视角 score。其核心思想是：一个 Gaussian 是否值得 clone/split，应同时满足两个条件：
+
+1. 它在训练过程中产生了足够大的 gradient signal；
+2. 它在多个训练视角的 high-error pixels 上确实有贡献。
+
+当前增长侧实际采用三类低成本因子：
+
+| 增长因子 | 信号来源 | 作用 |
+| --- | --- | --- |
+| 局部优化压力 | signed/abs view-space gradient | 找出当前 Gaussian 容量不足、需要 clone/split 的位置 |
+| 多视角高误差贡献 | metric-count render 得到的 importance score | 避免只由单视角 spike 触发增长，要求候选确实参与解释多视角高误差区域 |
+| 训练阶段 | densification window、SH schedule、Morton/order window | 早中期允许增长，后期停止结构扩张，把训练预算留给收敛 |
+
+因此，第 6 章讨论的是“什么时候增加容量”。Opacity、low-value VCP score、delete budget 等删除侧因素放在第 7 章单独讨论。
 
 ### 6.2 从预算受限结构编辑推导多视角一致性
 
@@ -750,21 +740,9 @@ $$
 
 其中 $\mathcal{G}_{\mathrm{split}}$ 的 parent 被包含在 $\mathcal{G}_{\mathrm{prune}}$ 中。这个写法突出当前方法的语义：density control 是“受 score 约束的结构编辑”，不是连续参数优化的一部分。
 
-### 6.5 可扩展信号：增加与删除
+### 6.5 增长侧可扩展信号
 
-上述推导也自然允许引入更多 reliability signals。当前实现已经使用 gradient、
-multi-view score、opacity 和 scale 作为原始观测信号，用 split replacement 等派生 mask
-形成候选，并使用 delayed confirmation 与 pruning budget 作为删除执行策略。更完整的
-controller 可以把 6.1 中的四类因子分别接入增加和删除决策：
-
-| 因子组 | 可用于 densify 的证据 | 可用于 prune 的证据 | 设计含义 |
-| --- | --- | --- | --- |
-| 几何相关因子 | surface proximity、large covariance、高局部误差下的过大 scale | 远离表面、局部过密、低贡献的小尺度噪声点 | 区分“需要细化的粗结构”和“漂浮/冗余结构” |
-| 视觉贡献因子 | edge/detail mask、perceptual sensitivity、多视角高误差贡献 | 低 perceptual sensitivity、低 tile/pixel coverage、低 alpha contribution | 把 Gaussian budget 优先分配给人眼敏感和高频区域 |
-| 优化相关因子 | 高 gradient、稳定 gradient history、训练早期容量不足 | 长期低 gradient、低 opacity、与邻居高度相关 | 用学习动态判断容量是“不足”还是“冗余” |
-| 系统和资源因子 | budget 充足时放宽增长、稀疏区域优先 densify | Gaussian 数/VRAM/tile pressure 超预算时提高删除优先级 | 让质量目标和设备预算共同约束结构规模 |
-
-下面这些具体信号尚未进入当前 baseline，本文只把它们作为未来扩展讨论。它们应当经过单独 ablation，而不能直接写成当前方法贡献。
+上述推导也自然允许在增加策略里引入更多 reliability signals。下面这些具体信号尚未进入当前 baseline，本文只把它们作为未来增长侧扩展讨论。它们应当经过单独 ablation，而不能直接写成当前方法贡献。
 
 一个更一般的 densification gate 可以写为
 
@@ -781,33 +759,49 @@ S_i =
 \sum_k w_k r_i^{(k)}.
 $$
 
-潜在额外信号包括：
+潜在增长侧额外信号包括：
 
 | 因子组 | 未实现信号 | 数学形式示例 | 动机 |
 | --- | --- | --- | --- |
-| 几何 | 表面接近度 | $r_i^{\mathrm{surf}}=-d(\boldsymbol{\mu}_i,\mathcal{S})$ | 离可靠表面近的 Gaussian 更应保留；远离表面且低贡献时更像漂浮点 |
-| 几何 | 局部密度/冗余 | $r_i^{\mathrm{knn}}=\frac{1}{K}\sum_{j\in\mathcal{N}_K(i)}\|\boldsymbol{\mu}_i-\boldsymbol{\mu}_j\|_2$ | 过密区域可 prune/merge，稀疏且高误差区域可 densify |
+| 几何 | 表面接近度 | $r_i^{\mathrm{surf}}=-d(\boldsymbol{\mu}_i,\mathcal{S})$ | 在可靠表面附近且仍有高误差的位置优先细化 |
+| 几何 | 局部稀疏度 | $r_i^{\mathrm{knn}}=\frac{1}{K}\sum_{j\in\mathcal{N}_K(i)}\|\boldsymbol{\mu}_i-\boldsymbol{\mu}_j\|_2$ | 稀疏且高误差区域比过密区域更值得 densify |
 | 视觉 | 视角覆盖度 | $r_i^{\mathrm{view}}=\frac{1}{K}\sum_{v\in\mathcal{V}_K}\mathbb{1}[h_{i,v}>0]$ | 区分“来自多个视角的稳定高误差”和“单视角 spike” |
 | 视觉 | 误差稳定性 | $r_i^{\mathrm{stab}}=-\operatorname{Var}_{v\in\mathcal{V}_K}(h_{i,v})$ | 避免某一个 view 极端误差主导 densification |
 | 视觉 | 透射率加权可见性 | $r_i^{\mathrm{vis}}=\sum_{v,\mathbf{p}}M_v(\mathbf{p})A_{i,v}(\mathbf{p})T_{i,v}(\mathbf{p})$ | 优先增加真正影响最终像素颜色的可见 Gaussian |
-| 视觉 | perceptual/edge 权重 | $r_i^{\mathrm{perc}}=\sum_{v,\mathbf{p}}P_v(\mathbf{p})A_{i,v}(\mathbf{p})$ | 在 LPIPS/SSIM 敏感或边缘细节区域更保守删除、更积极细化 |
+| 视觉 | perceptual/edge 权重 | $r_i^{\mathrm{perc}}=\sum_{v,\mathbf{p}}P_v(\mathbf{p})A_{i,v}(\mathbf{p})$ | 在 LPIPS/SSIM 敏感或边缘细节区域更积极细化 |
 | 优化 | 梯度历史稳定性 | $r_i^{\mathrm{hist}}=\operatorname{EMA}(r_i^{\mathrm{grad}})$ | 避免偶然一个 interval 的 gradient spike 触发结构增长 |
-| 优化 | 冗余剪枝 | $q_i^{\mathrm{red}}=\mathbb{1}[r_i^{\mathrm{knn}}<\tau_{\mathrm{near}}]\mathbb{1}[\sigma(o_i)<\tau_{\alpha}^{\mathrm{keep}}]$ | 在局部已有足够解释时，优先删除低 opacity 冗余点 |
-| 优化 | score 波动剪枝 | $q_i^{\mathrm{var}}=\mathbb{1}[\operatorname{Var}_t(s_{i,t}^{-})>\tau_{\mathrm{var}}]$ | 只在少数 pass 异常高的 score 更像不稳定候选 |
-| 系统 | 低覆盖剪枝 | $q_i^{\mathrm{lowcov}}=\mathbb{1}[c_i^{\mathrm{pixel}}<\tau_c]$ | 投影覆盖有效像素很少的 Gaussian 对最终图像贡献有限 |
-| 系统 | 资源预算优先级 | $q_i^{\mathrm{budget}}=\mathbb{1}[N>N_{\max}]\,\pi_i$ | 当 Gaussian 数或 VRAM 超预算时，按低贡献优先级提高删除强度 |
-| 系统 | temporal consistency | $r_i^{\mathrm{time}}=\operatorname{EMA}_{\tau}(h_{i,\tau})$ | 动态场景中跨时间帧稳定低贡献才更适合删除 |
-| 验证 | 软删除验证 | $\Delta\mathcal{L}_i^{\mathrm{sup}}=\mathcal{L}(\sigma(o_i)\leftarrow \epsilon)-\mathcal{L}$ | 先临时压低 opacity，再确认是否真的可以删除 |
+| 系统 | 资源预算门控 | $r_i^{\mathrm{budget}}=\mathbb{1}[N<N_{\max}]S_i$ | 只有在 Gaussian 数和 VRAM 预算允许时放宽增长 |
+| 系统 | temporal consistency | $r_i^{\mathrm{time}}=\operatorname{EMA}_{\tau}(h_{i,\tau})$ | 动态场景中跨时间帧稳定高贡献才更适合 densify |
 
 这些扩展与本文的预算受限结构编辑观点一致，但需要额外实验验证。为保持当前方法清晰和可复现，v0.4.17 baseline 不包含这些未实现信号。
 
-## 7. 删除策略与模型规模控制
+## 7. 删除因子与减少策略
 
 ### 7.1 动机
 
 AnySplat 初始化和 densification 都会提供模型容量。如果没有 pruning，Gaussian 数量会持续增长，导致 backward、Adam update 和显存压力上升。Pruning 的目标不是简单让模型更小，而是删除低贡献、过大或多视角不一致的 Gaussian，使剩余容量集中在真正影响重建质量的位置。
 
-### 7.2 从预算受限删除推导 pruning
+### 7.2 当前使用的删除因子
+
+删除方向需要额外判据，因为 pruning 的错误代价高于 densification：错误增长通常只是增加计算成本，后续仍可删除；错误删除则会直接移除参数和 optimizer state。当前代码已经使用的删除因子包括：
+
+| 删除因子 | 依赖的原始信号/状态 | 作用 |
+| --- | --- | --- |
+| low-opacity mask | $\sigma(o_i)<\tau_o$ | 删除几乎不贡献颜色的 Gaussian |
+| large-scale mask | $r_i>\tau_rR_{\mathrm{scene}}$ | 删除过大的异常 splat |
+| multi-view VCP mask | $s_i^{-}>\tau_p$ | 标记后期多视角不一致候选 |
+| split replacement mask | split parent state | parent 被 children 替代后删除 |
+
+这些判据只回答“哪些 Gaussian 是候选”。真正执行删除时，还会叠加删除策略：
+
+| 删除策略 | 当前实现 | 作用 |
+| --- | --- | --- |
+| delayed confirmation | VCP hit counter | 要求候选连续多次出现，降低误删 |
+| pruning budget | top-$B$ confirmed candidates | 限制单次删除幅度 |
+
+因此，当前方法不是简单的“高 score 增加、低 score 删除”。同一个 high-error contribution 需要结合 gradient、opacity、scale 和多视角稳定性解释：如果 high-error contribution 伴随高 gradient 和稳定可见性，它更像容量不足信号；如果它伴随低 opacity、异常 scale 或不稳定 coverage，它更像错误解释或低价值信号。
+
+### 7.3 从预算受限删除推导 pruning
 
 与 densification 对应，pruning 也可以看成一个预算受限的结构编辑问题。给定当前 Gaussian 集合 $\mathcal{G}$，删除子集 $\mathcal{R}\subset\mathcal{G}$ 后得到
 
@@ -874,7 +868,7 @@ $$
 
 这个推导和 densification 是对偶的：densification 寻找“值得增加容量”的位置，pruning 寻找“删除后损失可控、但能降低成本”的位置。两者都服务于同一个目标：把有限 Gaussian budget 分配给最能降低多视角重建误差的结构。
 
-### 7.3 Densification-stage pruning
+### 7.4 Densification-stage pruning
 
 每轮 adaptive density control 后，系统构造常规 prune mask：
 
@@ -935,7 +929,7 @@ $$
 
 然后按预算 $B=\lfloor 0.5|\mathcal{B}|\rfloor$ 采样删除。这种 budgeted stochastic pruning 比硬阈值删除更保守，能降低单轮 pruning 对质量的冲击。
 
-### 7.4 VCP pruning
+### 7.5 VCP pruning
 
 后期 VCP pruning 的入口是 `prune_multiview_inconsistent`。它不是 clone/split 之后顺手执行的常规 pruning，而是在单独的 VCP window 内重新渲染若干训练视角，重新计算 multi-view pruning score，然后执行一次显式结构删除。
 
@@ -1022,6 +1016,24 @@ $$
 与 densification-stage pruning 相比，VCP 仍然是低频、后期的显式删除动作。新增 delayed/budgeted 机制不改变 score 的语义，只改变删除动作的执行策略。
 
 在 v0.4.14 语义基线中，默认 VCP start 等于 18k，主训练 loop 下基本不触发。后续 v0.4.15-v0.4.22 将 VCP window 前移，用于探索更短 schedule 下的模型规模控制。实验判断显示，v0.4.20 的 no-VCP control 比 v0.4.19 更慢且 Gaussian 更多，说明短 schedule 下 early VCP 仍有价值。
+
+### 7.6 删除侧可扩展信号
+
+删除侧也可以接入更多可靠性证据，但必须比增长侧更保守。下面这些信号尚未进入当前 baseline，本文只作为未来减少策略的扩展方向：
+
+| 因子组 | 未实现信号 | 数学形式示例 | 动机 |
+| --- | --- | --- | --- |
+| 几何 | 远离表面 | $q_i^{\mathrm{float}}=\mathbb{1}[d(\boldsymbol{\mu}_i,\mathcal{S})>\tau_s]\mathbb{1}[\sigma(o_i)<\tau_\alpha]$ | 远离可靠表面且低 opacity 的点更可能是漂浮冗余 |
+| 几何 | 局部过密 | $q_i^{\mathrm{dense}}=\mathbb{1}[r_i^{\mathrm{knn}}<\tau_{\mathrm{near}}]$ | 过密区域可优先删除低贡献点或未来做 merge |
+| 视觉 | 低覆盖剪枝 | $q_i^{\mathrm{lowcov}}=\mathbb{1}[c_i^{\mathrm{pixel}}<\tau_c]$ | 投影覆盖有效像素很少的 Gaussian 对最终图像贡献有限 |
+| 视觉 | perceptual-insensitive 区域 | $q_i^{\mathrm{perc}}=\mathbb{1}[\sum P_v(\mathbf{p})A_{i,v}(\mathbf{p})<\tau_p]$ | 对 LPIPS/SSIM 敏感区域贡献低的点可更积极删除 |
+| 优化 | 冗余剪枝 | $q_i^{\mathrm{red}}=\mathbb{1}[r_i^{\mathrm{knn}}<\tau_{\mathrm{near}}]\mathbb{1}[\sigma(o_i)<\tau_{\alpha}^{\mathrm{keep}}]$ | 在局部已有足够解释时，优先删除低 opacity 冗余点 |
+| 优化 | score 波动剪枝 | $q_i^{\mathrm{var}}=\mathbb{1}[\operatorname{Var}_t(s_{i,t}^{-})>\tau_{\mathrm{var}}]$ | 只在少数 pass 异常高的 score 更像不稳定候选，应进入确认而不是直接删除 |
+| 系统 | 资源预算优先级 | $q_i^{\mathrm{budget}}=\mathbb{1}[N>N_{\max}]\,\pi_i$ | 当 Gaussian 数或 VRAM 超预算时，按低贡献优先级提高删除强度 |
+| 系统 | temporal consistency | $q_i^{\mathrm{time}}=\mathbb{1}[\operatorname{EMA}_{\tau}(h_{i,\tau})<\tau_h]$ | 动态场景中跨时间帧稳定低贡献才更适合删除 |
+| 验证 | 软删除验证 | $\Delta\mathcal{L}_i^{\mathrm{sup}}=\mathcal{L}(\sigma(o_i)\leftarrow \epsilon)-\mathcal{L}$ | 先临时压低 opacity，再确认是否真的可以删除 |
+
+这些扩展与第 5 章的统一目标一致，但需要单独实验验证。当前 v0.4.17/v0.4.27 主线不包含这些未实现删除因子。
 
 ## 8. 工程与训练稳定性细节
 
