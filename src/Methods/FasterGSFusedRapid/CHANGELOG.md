@@ -1,5 +1,22 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.35 pending experiment - 2026-05-13
+
+Code changes:
+
+- Cached `self.model.gaussians` into a local `gaussians` variable inside renderer hot paths.
+- Applied the same local-reference cleanup to training render, FastGS score render, metric-count render, and inference render.
+- Did not change CUDA kernels, tensor values, optimizer math, sampling, loss weights, densification, pruning, Morton ordering, AnySplat initialization, or schedules.
+
+Motivation:
+
+- Training render calls repeatedly traverse `self.model.gaussians` to pass the same Gaussian tensors into the rasterizer.
+- A local reference preserves semantics while trimming a small amount of Python attribute lookup overhead from the render path.
+
+Verification:
+
+- Pending compile/full benchmark.
+
 ## fastergsfusedrapid-v0.4.34 rejected experiment - 2026-05-13
 
 Tested code/config changes:
