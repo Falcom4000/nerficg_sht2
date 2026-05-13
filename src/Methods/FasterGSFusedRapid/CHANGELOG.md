@@ -1,5 +1,50 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.36 rejected local experiment - 2026-05-13
+
+Tested code changes:
+
+- Cache the train-view list used by FastGS score sampling after the training sampler is created.
+- Reuse that cached view pool in `_sample_score_views` instead of rebuilding `list(dataset)` at every FastGS score callback.
+- Preserve the same `random.sample` call path, sample count, train split mode, and view object references.
+- Does not change CUDA kernels, tensor math, renderer outputs, loss weights, optimizer settings, densification/pruning thresholds, Morton ordering, AnySplat initialization, or schedules.
+- Reverted the Trainer code after the full benchmark because it did not improve speed over v0.4.27.
+
+Motivation:
+
+- FastGS score computation samples from the train split repeatedly during densification/VCP callbacks.
+- `BaseDataset.__iter__` returns the current split list, so rebuilding a Python list each callback should be redundant after the sampler initializes on the train split.
+- The expected benefit is small but low-risk Python overhead reduction outside the rasterizer and optimizer math.
+
+Verification:
+
+- `/usr/local/miniconda3/envs/nerficg/bin/python -m py_compile src/Methods/FasterGSFusedRapid/Trainer.py src/Methods/FasterGSFusedRapid/Renderer.py`
+- `git diff --check`
+- Bicycle smoke benchmark:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_27_mode_guard_17k --repeats 1 --suite-name fastergsfusedrapid_v0_4_36_score_view_pool_bicycle_r1 --scenes bicycle`
+- Full 7-scene repeat-3 benchmark:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_27_mode_guard_17k --repeats 3 --suite-name fastergsfusedrapid_v0_4_36_score_view_pool_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_36_score_view_pool_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 128.4843s | 25.2880 | 0.7437 | 0.2991 | 1,495,404 | 4.8943GiB |
+| bonsai | 3 | 80.5294s | 31.4390 | 0.9363 | 0.2582 | 413,014 | 5.7162GiB |
+| counter | 3 | 75.6684s | 28.5065 | 0.8949 | 0.2836 | 275,936 | 4.9943GiB |
+| garden | 3 | 85.9625s | 26.7876 | 0.8347 | 0.1915 | 867,746 | 2.9968GiB |
+| kitchen | 3 | 88.4832s | 30.8768 | 0.9187 | 0.1753 | 402,094 | 5.5879GiB |
+| room | 3 | 78.5768s | 31.3051 | 0.9122 | 0.3061 | 360,758 | 6.0463GiB |
+| stump | 3 | 88.0086s | 25.8463 | 0.7284 | 0.3026 | 1,188,058 | 2.5784GiB |
+| mean | 21 | 89.3876s | 28.5785 | 0.8527 | 0.2595 | 714,716 | 4.6878GiB |
+
+Interpretation:
+
+- v0.4.36 passes the strict v0.4.27 quality floor (`28.5785 >= 28.5626`) but is slower than v0.4.27 (`89.39s` vs `88.99s`).
+- The cached score-view pool is not a valid speed optimization under the current objective, despite its higher measured PSNR.
+- Do not promote v0.4.36. Keep v0.4.27 as the strict-quality speed baseline.
+
 ## fastergsfusedrapid-v0.4.35 rejected local experiment - 2026-05-13
 
 Tested code changes:
