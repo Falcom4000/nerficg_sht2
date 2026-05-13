@@ -1,5 +1,46 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.30 rejected local experiment - 2026-05-12
+
+Tested config changes:
+
+- Tested with local `configs/fastergsfusedrapid_v0_4_30_no_profiler_17k/*.yaml`, copied from v0.4.27.
+- Set `TRAINING.PROFILER.ACTIVE=false`.
+- Kept all training, densification, Morton ordering, VCP, AnySplat, loss, and optimizer hyperparameters unchanged.
+- The local config directory is not retained in git because the experiment did not pass the strict speed/quality gate.
+
+Motivation:
+
+- v0.4.27 is the current strict-quality baseline with quality floor `28.5626` PSNR.
+- The v0.4.27 benchmark config still enables CUDA event profiling windows, which introduce extra event recording and synchronization in the hot training loop.
+- Production timing should disable profiler instrumentation while preserving the same training algorithm.
+
+Verification:
+
+- YAML parse check for all local v0.4.30 configs and `TRAINING.PROFILER.ACTIVE=false`.
+- Full 7-scene repeat-3 benchmark:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_30_no_profiler_17k --repeats 3 --suite-name fastergsfusedrapid_v0_4_30_no_profiler_17k_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_30_no_profiler_17k_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 128.4342s | 25.2759 | 0.7439 | 0.2987 | 1,495,196 | 4.8959GiB |
+| bonsai | 3 | 80.1203s | 31.4258 | 0.9362 | 0.2581 | 414,152 | 5.7162GiB |
+| counter | 3 | 75.2083s | 28.4965 | 0.8949 | 0.2839 | 275,281 | 4.9943GiB |
+| garden | 3 | 85.8180s | 26.6909 | 0.8343 | 0.1915 | 870,917 | 2.9978GiB |
+| kitchen | 3 | 87.8973s | 30.7287 | 0.9183 | 0.1756 | 401,317 | 5.5879GiB |
+| room | 3 | 77.9444s | 31.2705 | 0.9120 | 0.3063 | 359,351 | 6.0463GiB |
+| stump | 3 | 87.7125s | 25.8354 | 0.7283 | 0.3022 | 1,189,512 | 2.5775GiB |
+| mean | 21 | 89.0193s | 28.5320 | 0.8525 | 0.2595 | 715,104 | 4.6880GiB |
+
+Interpretation:
+
+- v0.4.30 is slightly slower than v0.4.27 (`89.02s` vs `88.99s`) and falls below the new strict quality floor (`28.5320 < 28.5626` PSNR).
+- Disabling profiler instrumentation is not a valid baseline replacement under repeat-3 full-scene measurement.
+- Keep v0.4.27 as the current strict-quality baseline.
+
 ## fastergsfusedrapid-v0.4.29 rejected local experiment - 2026-05-12
 
 Tested code changes:
