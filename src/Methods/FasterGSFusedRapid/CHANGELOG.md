@@ -1,5 +1,24 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.32 - 2026-05-13
+
+Code/config changes:
+
+- Re-tested the precomputed per-step mean-position learning-rate schedule from v0.4.31.
+- Added `configs/fastergsfusedrapid_v0_4_32_lr_cache_17100/*.yaml`, copied from v0.4.27.
+- Increased only the final tail from `NUM_ITERATIONS=17000` to `17100` and `FASTGS_PRUNING_END_ITERATION=17100`.
+- Kept densification end, Morton ordering end, VCP windows, AnySplat, loss, and optimizer hyperparameters unchanged.
+
+Motivation:
+
+- v0.4.31 improved train time but missed the v0.4.27 quality floor.
+- This experiment tests whether the LR-cache speed gain can pay for a small extra tail budget and recover PSNR while staying faster than v0.4.27.
+
+Verification:
+
+- Full 7-scene repeat-3 benchmark pending:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_32_lr_cache_17100 --repeats 3 --suite-name fastergsfusedrapid_v0_4_32_lr_cache_17100_r3`
+
 ## fastergsfusedrapid-v0.4.31 rejected local experiment - 2026-05-13
 
 Tested code changes:
