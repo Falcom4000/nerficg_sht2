@@ -114,7 +114,6 @@ class Gaussians(torch.nn.Module):
         self.training_cameras_extent = 1.0
         self.lr_means = 0.0
         self.lr_means_scheduler = None
-        self.lr_means_schedule = None
         # adam moments
         self.moments_means = torch.empty(0)
         self.moments_sh_coefficients_0 = torch.empty(0)
@@ -314,17 +313,10 @@ class Gaussians(torch.nn.Module):
             lr_final=training_wrapper.OPTIMIZER.LEARNING_RATE_MEANS_FINAL * self.training_cameras_extent,
             max_steps=training_wrapper.OPTIMIZER.LEARNING_RATE_MEANS_MAX_STEPS
         )
-        self.lr_means_schedule = [
-            self.lr_means_scheduler(iteration)
-            for iteration in range(int(training_wrapper.NUM_ITERATIONS) + 1)
-        ]
 
     def update_learning_rate(self, iteration: int) -> None:
         """Computes the current learning rate for the given iteration."""
-        if self.lr_means_schedule is not None and 0 <= iteration < len(self.lr_means_schedule):
-            self.lr_means = self.lr_means_schedule[iteration]
-        else:
-            self.lr_means = self.lr_means_scheduler(iteration)
+        self.lr_means = self.lr_means_scheduler(iteration)
 
     def reset_opacities(self) -> None:
         """Resets the opacities to a fixed value."""

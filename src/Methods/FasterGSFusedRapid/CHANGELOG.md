@@ -1,13 +1,14 @@
 # FasterGSFusedRapid Changelog
 
-## fastergsfusedrapid-v0.4.32 - 2026-05-13
+## fastergsfusedrapid-v0.4.32 rejected experiment - 2026-05-13
 
-Code/config changes:
+Tested code/config changes:
 
 - Re-tested the precomputed per-step mean-position learning-rate schedule from v0.4.31.
-- Added `configs/fastergsfusedrapid_v0_4_32_lr_cache_17100/*.yaml`, copied from v0.4.27.
+- Added temporary `configs/fastergsfusedrapid_v0_4_32_lr_cache_17100/*.yaml`, copied from v0.4.27.
 - Increased only the final tail from `NUM_ITERATIONS=17000` to `17100` and `FASTGS_PRUNING_END_ITERATION=17100`.
 - Kept densification end, Morton ordering end, VCP windows, AnySplat, loss, and optimizer hyperparameters unchanged.
+- Reverted the LR schedule cache and removed the temporary config after benchmark because the experiment failed both speed and strict-quality gates.
 
 Motivation:
 
@@ -16,8 +17,29 @@ Motivation:
 
 Verification:
 
-- Full 7-scene repeat-3 benchmark pending:
+- `/usr/local/miniconda3/envs/nerficg/bin/python -m py_compile src/Methods/FasterGSFusedRapid/Model.py src/Methods/FasterGSFusedRapid/Trainer.py`
+- Full 7-scene repeat-3 benchmark:
   `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_32_lr_cache_17100 --repeats 3 --suite-name fastergsfusedrapid_v0_4_32_lr_cache_17100_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_32_lr_cache_17100_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 128.7371s | 25.2658 | 0.7433 | 0.2989 | 1,490,705 | 4.8880GiB |
+| bonsai | 3 | 80.5711s | 31.4137 | 0.9363 | 0.2583 | 413,316 | 5.7162GiB |
+| counter | 3 | 75.8309s | 28.4801 | 0.8944 | 0.2841 | 275,252 | 4.9943GiB |
+| garden | 3 | 85.9478s | 26.7955 | 0.8343 | 0.1907 | 872,515 | 2.9955GiB |
+| kitchen | 3 | 88.3275s | 30.7484 | 0.9180 | 0.1761 | 403,372 | 5.5879GiB |
+| room | 3 | 78.0773s | 31.2681 | 0.9122 | 0.3053 | 358,438 | 6.0464GiB |
+| stump | 3 | 88.0889s | 25.8531 | 0.7280 | 0.3018 | 1,189,706 | 2.5792GiB |
+| mean | 21 | 89.3687s | 28.5464 | 0.8524 | 0.2593 | 714,758 | 4.6868GiB |
+
+Interpretation:
+
+- v0.4.32 is slower than v0.4.27 (`89.37s` vs `88.99s`) and below the strict PSNR floor (`28.5464 < 28.5626`).
+- The extra 100 tail iterations did not recover enough quality and erased the small LR-cache speed gain seen in v0.4.31.
+- Do not promote v0.4.32. Keep v0.4.27 as the current strict-quality baseline.
 
 ## fastergsfusedrapid-v0.4.31 rejected local experiment - 2026-05-13
 
