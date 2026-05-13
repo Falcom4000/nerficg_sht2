@@ -2751,6 +2751,8 @@ MORTON_ORDERING_END_ITERATION: 15000
 | v0.4.30 | v0.4.27 + profiler disabled local config experiment | mean train `89.02s`，PSNR `28.5320`，低于 v0.4.27 新门槛且没有提速，配置不保留 |
 | v0.4.31 | v0.4.27 + precomputed mean LR schedule local experiment | mean train `88.54s`，PSNR `28.5524`，低于 v0.4.27 新门槛，代码回退、不保留 |
 | v0.4.32 | v0.4.31 LR schedule cache + 17.1k final tail local experiment | mean train `89.37s`，PSNR `28.5464`，低于 v0.4.27 新门槛且更慢，代码和配置回退、不保留 |
+| v0.4.33 | v0.4.27 + remove autograd dummy output/zero-loss edge local experiment | mean train `88.48s`，PSNR `28.5583`，速度更快但低于 v0.4.27 新门槛，代码回退、不保留 |
+| v0.4.34 | v0.4.33 + 17.1k final tail local experiment | mean train `88.88s`，PSNR `28.5115`，额外 tail 未补回质量，代码和配置回退、不保留 |
 
 因此，后续论文主表可以根据叙事选择 v0.4.17 或 v0.4.27：v0.4.17 是更直接的
 schedule/pruning baseline，v0.4.27 是当前严格质量门槛下的最佳实现基线。v0.4.19-v0.4.22
@@ -2772,6 +2774,8 @@ v0.4.23 说明 conservative VCP 可以稳住质量，但它主要通过少删来
 - v0.4.30 说明关闭 profiler 不是可依赖的 baseline 提升；全量 repeat=3 下没有更快且质量未过线；
 - v0.4.31 说明 scalar LR schedule 缓存可以带来速度收益，但严格质量门槛下仍然不能替换 v0.4.27；
 - v0.4.32 说明用额外 100 个 tail iteration 试图补回 LR-cache 的质量缺口并不划算：质量仍低于门槛，训练均值还慢于 v0.4.27；
+- v0.4.33 说明 autograd wrapper 里的 dummy 输出/zero-loss edge 虽然看似是纯工程开销，但在全量 repeat=3 下仍不能越过严格质量门槛，因此不作为主线；
+- v0.4.34 说明给 v0.4.33 增加 100 个 tail iteration 不能稳定补回质量，反而出现更低的 PSNR 均值；
 - 把这些版本放在 trade-off 表中，比把最快版本当默认 baseline 更严谨。
 
 ## 11. 实验及其结论
@@ -2848,6 +2852,8 @@ v0.4.25 和 v0.4.26 尝试只缩短最后 tail step，结果如下：
 | v0.4.30 | 89.0193s | 28.5320 | -0.0282 | 相对 v0.4.27 新门槛不合格且没有提速，不保留配置 |
 | v0.4.31 | 88.5439s | 28.5524 | -0.0202 | 速度提升但相对 v0.4.27 新门槛不合格，回退代码 |
 | v0.4.32 | 89.3687s | 28.5464 | -0.0263 | 额外 100 tail step 仍未补回质量且更慢，回退代码和配置 |
+| v0.4.33 | 88.4827s | 28.5583 | -0.0144 | 速度提升但仍低于 v0.4.27 新门槛，回退代码 |
+| v0.4.34 | 88.8809s | 28.5115 | -0.0612 | 17.1k tail 未补回质量，回退代码和配置 |
 
 v0.4.27 的改动不改变 CUDA rasterizer、loss、采样序列、densification、Clone/Split、
 Pruning、Morton 排序或 optimizer 更新。它只把每步都会执行的

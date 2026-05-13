@@ -1,5 +1,92 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.34 rejected experiment - 2026-05-13
+
+Tested code/config changes:
+
+- Keeps the v0.4.33 autograd wrapper cleanup.
+- Added temporary `configs/fastergsfusedrapid_v0_4_34_dummy_output_17100/*.yaml`, copied from v0.4.27.
+- Increases only the final tail from `NUM_ITERATIONS=17000` to `17100` and `FASTGS_PRUNING_END_ITERATION=17100`.
+- Keeps densification end, Morton ordering end, VCP start/interval/confirmation/budget, AnySplat, loss, and optimizer hyperparameters unchanged.
+- Reverted the v0.4.33 autograd wrapper cleanup and removed the temporary config after benchmark because v0.4.34 missed the strict PSNR gate by a wide margin.
+
+Motivation:
+
+- v0.4.33 was faster than v0.4.27 but missed the strict v0.4.27 PSNR floor by `0.0044dB`.
+- This experiment tests whether the autograd-wrapper speed gain can pay for 100 extra tail iterations and recover quality while staying no slower than v0.4.27.
+
+Verification:
+
+- Full 7-scene repeat-3 benchmark:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_34_dummy_output_17100 --repeats 3 --suite-name fastergsfusedrapid_v0_4_34_dummy_output_17100_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_34_dummy_output_17100_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 128.7118s | 25.2515 | 0.7427 | 0.2992 | 1,490,565 | 4.8881GiB |
+| bonsai | 3 | 80.1272s | 31.2816 | 0.9360 | 0.2583 | 413,471 | 5.7162GiB |
+| counter | 3 | 75.6615s | 28.4834 | 0.8945 | 0.2840 | 274,970 | 4.9944GiB |
+| garden | 3 | 85.1760s | 26.7679 | 0.8342 | 0.1909 | 872,561 | 2.9988GiB |
+| kitchen | 3 | 88.0200s | 30.7104 | 0.9180 | 0.1762 | 401,784 | 5.5879GiB |
+| room | 3 | 77.6310s | 31.2437 | 0.9122 | 0.3055 | 362,088 | 6.0464GiB |
+| stump | 3 | 86.8385s | 25.8417 | 0.7277 | 0.3023 | 1,187,410 | 2.5786GiB |
+| mean | 21 | 88.8809s | 28.5115 | 0.8522 | 0.2595 | 714,693 | 4.6872GiB |
+
+Interpretation:
+
+- v0.4.34 remains faster than v0.4.27 (`88.88s` vs `88.99s`) but fails the strict quality gate (`28.5115 < 28.5626`).
+- The 100 extra tail iterations did not recover v0.4.33 quality and instead produced a much lower repeat-3 mean PSNR.
+- Do not promote v0.4.34. Keep v0.4.27 as the strict-quality baseline.
+
+## fastergsfusedrapid-v0.4.33 rejected local experiment - 2026-05-13
+
+Tested code changes:
+
+- Kept `autograd_dummy` as the differentiable input that causes the custom rasterizer output image to carry a grad function.
+- Removed the unused `autograd_dummy` forward output from the Python autograd binding.
+- Removed the `+ 0.0 * autograd_dummy` loss edge in the training loop.
+- Did not change CUDA kernels, optimizer math, sampling, loss weights, densification, pruning, Morton ordering, AnySplat initialization, or schedules.
+- Reverted this code path after v0.4.34 because neither v0.4.33 nor the 17.1k recovery test passed the strict v0.4.27 quality gate.
+
+Motivation:
+
+- The previous zero edge was a defensive graph connection from an earlier binding shape.
+- In the current custom autograd path, the rasterized image itself is produced by `_Rasterize.apply(...)` with a differentiable dummy input, so `loss.backward()` still calls the same custom backward with the same `grad_image`.
+- Removing the unused output and scalar zero-add trims a small amount of Python/Tensor work from every training iteration without changing training semantics.
+
+Verification:
+
+- `/usr/local/miniconda3/envs/nerficg/bin/python -m py_compile src/Methods/FasterGSFusedRapid/Trainer.py src/Methods/FasterGSFusedRapid/Renderer.py src/Methods/FasterGSFusedRapid/FasterGSFusedRapidCudaBackend/FasterGSFusedRapidCudaBackend/torch_bindings/rasterization.py`
+- `git diff --check`
+- Smoke benchmark:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_27_mode_guard_17k --scenes bicycle --repeats 1 --suite-name fastergsfusedrapid_v0_4_33_dummy_output_smoke_bicycle_r1`
+- Smoke result: `127.8704s`, PSNR `25.3081`, SSIM `0.7444`, LPIPS `0.2989`, `1,491,457` Gaussians.
+- Full 7-scene repeat-3 benchmark:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_27_mode_guard_17k --repeats 3 --suite-name fastergsfusedrapid_v0_4_33_dummy_output_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_33_dummy_output_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 127.9962s | 25.3108 | 0.7442 | 0.2985 | 1,491,588 | 4.8889GiB |
+| bonsai | 3 | 79.7131s | 31.4082 | 0.9363 | 0.2581 | 414,823 | 5.7162GiB |
+| counter | 3 | 75.0139s | 28.4779 | 0.8948 | 0.2838 | 275,594 | 4.9943GiB |
+| garden | 3 | 84.7538s | 26.7757 | 0.8348 | 0.1911 | 872,239 | 3.0003GiB |
+| kitchen | 3 | 87.5870s | 30.8326 | 0.9186 | 0.1757 | 401,405 | 5.5879GiB |
+| room | 3 | 77.4004s | 31.2629 | 0.9119 | 0.3062 | 359,633 | 6.0464GiB |
+| stump | 3 | 86.9142s | 25.8397 | 0.7282 | 0.3020 | 1,188,844 | 2.5777GiB |
+| mean | 21 | 88.4827s | 28.5583 | 0.8527 | 0.2593 | 714,875 | 4.6874GiB |
+
+Interpretation:
+
+- v0.4.33 is faster than v0.4.27 (`88.48s` vs `88.99s`) but slightly below the strict v0.4.27 quality floor (`28.5583 < 28.5626`).
+- Because the code change should be semantically equivalent, this is a near miss rather than evidence of a deliberate quality/speed trade-off.
+- Do not promote v0.4.33 by itself under the strict v0.4.27 gate; test v0.4.34 with a small extra tail budget.
+- v0.4.34 also failed, so keep the original autograd dummy output and zero-loss edge in mainline.
+
 ## fastergsfusedrapid-v0.4.32 rejected experiment - 2026-05-13
 
 Tested code/config changes:
