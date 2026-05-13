@@ -1035,13 +1035,21 @@ $$
 
 这些扩展与第 5 章的统一目标一致，但需要单独实验验证。当前 v0.4.17/v0.4.27 主线不包含这些未实现删除因子。
 
-## 8. 工程与训练稳定性细节
+## 8. 工程实现与训练稳定性细节
 
-### 8.1 Morton ordering
+### 8.1 显存控制、CUDA allocator 与缓存
 
-Densification 会不断 append 新 Gaussian，破坏参数 tensor 的空间局部性。当前版本周期性按 Morton/z-order 重排 Gaussian 参数和 Adam moments。该操作不改变 Gaussian 集合或参数值，只改变 tensor 顺序；同步 moments 是必要条件，否则 Adam state 会错配到错误 Gaussian。
+FasterGSFusedRapid 的显存压力主要来自三类对象：Gaussian 参数和 Adam moments、rasterization 中间 buffers、训练图像和相机数据。当前配置使用 `PRELOADING_LEVEL=2` 将训练图像预加载到 VRAM，减少每步 CPU/GPU 数据搬运抖动；同时不预计算全部 rays，因为 3DGS rasterization 直接由相机参数、Gaussian 参数和 tile grid 驱动，提前展开 ray tensor 会额外占用显存且不进入主热路径。
 
-动机是改善 fused CUDA backend 的内存局部性，尤其是在 preprocess、blend、backward 和 Adam update 都按 Gaussian id 访问参数时。
+训练开始时优先启用 PyTorch CUDA allocator 的 `expandable_segments`。如果当前环境不支持该 allocator 选项，则在 densification/pruning 等改变 tensor 形状的阶段后显式 `torch.cuda.empty_cache()`，降低长实验中的碎片化风险。这个策略不改变数值计算，但影响 7 scenes repeat=3 benchmark 的稳定性：密集 append、split parent prune 和 final pruning 都会造成大 tensor 重新分配，碎片化会把本来可用的显存变成不可连续分配的空间。
+
+Renderer 侧还缓存两类小对象。第一，训练 view 的 `w2c` 和 camera position 会按 view 内部 pose 对象 id 缓存为 contiguous CUDA tensor，避免每次 render 重复构造相机张量。第二，空 `float32` 和 `bool` sentinel tensor 会按 device 复用，用于无 densification info 或无 metric map 的 render 调用，避免在 Python/CUDA 边界反复创建 `torch.empty(0)`。这些优化单次收益很小，但它们处在每步训练和多视角 score render 的高频路径上。
+
+### 8.2 Morton ordering 与参数局部性
+
+Densification 会不断 append 新 Gaussian，破坏参数 tensor 的空间局部性。当前版本周期性按 Morton/z-order 重排 Gaussian 参数、densification state、VCP state 和 Adam moments。该操作不改变 Gaussian 集合或参数值，只改变 tensor 顺序；同步 moments 是必要条件，否则 Adam state 会错配到错误 Gaussian。
+
+动机是改善 fused CUDA backend 的内存局部性，尤其是在 preprocess、blend、backward 和 Adam update 都按 Gaussian id 访问参数时。Morton ordering 把空间邻近的 Gaussian 尽量放到相近 index，使投影后触达相近 tile 的 primitive 在参数内存上也更集中，从而减少 cache miss 和不规则访存。
 
 形式化地，设 Morton code 给出排列 $\pi$。排序后所有 per-Gaussian tensor 都应用同一个排列：
 
@@ -1053,17 +1061,51 @@ $$
 
 这里 $\Theta_i$ 表示 Gaussian 参数，$\mathbf{m}_i,\mathbf{v}_i$ 表示 Adam moments。该操作不改变集合 $\{G_i\}$，只改变存储顺序。
 
-### 8.2 Opacity reset 与背景一致性
+### 8.3 并行投影、tile instance 与排序
 
-当前版本保留 3DGS 的 opacity reset，并对非黑背景提供额外早期 reset。Opacity reset 的目的不是改变目标函数，而是避免早期 opacity 饱和导致遮挡关系锁死。对于带 alpha 或非默认背景的数据，GT 合成、training render、score render 和 metric-count render 必须使用一致背景，否则 high-error mask 和 pruning score 会偏向背景区域。
+CUDA forward 首先对每个 Gaussian 并行执行 preprocess：世界坐标到相机坐标投影、3D covariance 到 2D conic 的变换、视锥和半径过滤、tile 覆盖估计、SH 颜色计算和 alpha 相关预处理。对每个仍有效的 Gaussian，backend 生成若干 `(tile_id, depth, gaussian_id)` instance。有效 instance 数 $M$ 通常远小于 `N * n_tiles`，因此实现不会为每个 Gaussian 枚举整张图像，而是只展开其投影椭圆可能影响的 tile。
 
-### 8.3 RGB-only CUDA ABI
+Instance 随后按 tile 和 depth 进行 radix sort。排序后的连续区间对应每个 tile 的 front-to-back primitive 列表，blend kernel 可以按 tile 独立并行执行 alpha compositing。这个设计保留了 3DGS 的深度有序 alpha blending 语义，同时把全局可见性问题转化为大量 tile-local 的并行工作。
+
+对于覆盖 tile 很少的 Gaussian，tile 计数可以在线程内顺序完成；对于覆盖 tile 很多的 Gaussian，kernel 使用 warp-level cooperative 路径分摊 tile contribution 检查。这样可以避免大 Gaussian 或近相机 Gaussian 把单个线程拖成长尾。
+
+### 8.4 Bucket 化 blend 与负载均衡
+
+不同 tile 的 primitive 数差异很大：背景 tile 可能几乎没有 Gaussian，边缘或近景 tile 可能有很长的有序列表。若一个 CUDA block 固定处理一个 tile，重 tile 会成为长尾，轻 tile 又浪费并行度。当前 backend 在 tile range 之上构建 bucket，将每个 tile 的 primitive 列表按固定粒度拆分成多个 bucket，并记录 bucket 到 tile 的映射。
+
+Forward blend 和 backward blend 都以 bucket 为调度单位。每个 bucket 处理同一个 tile 的一段 primitive，并利用 tile 内像素并行计算颜色、transmittance、contributor count 和反向传播所需的中间量。这样既保留了 tile 内 front-to-back 顺序，又让包含大量 primitive 的 tile 被拆成更多 CUDA work item，从而改善负载均衡。
+
+Backward 中，bucket 还复用 forward 保存的 tile final transmittance、processed count 和 color/transmittance buffer。这样可以避免完全重放 forward 的所有中间状态，同时仍能按 3DGS alpha compositing 公式恢复梯度。
+
+### 8.5 Torch autograd bridge 与 fused CUDA 更新
+
+训练路径仍使用 PyTorch 组合 RGB loss，但 Gaussian 参数本身不走 PyTorch `.grad` 和 `torch.optim.Adam.step()`。`_Rasterize` 是一个自定义 autograd function：forward 返回 rendered RGB image，并把 primitive/tile/instance/bucket buffers 保存到 autograd context；backward 接收 loss 对 image 的 `grad_image`，然后调用 `_C.backward`。
+
+在 `_C.backward` 内部，CUDA 同时完成两件事：计算可见 Gaussian 的 mean、scale、rotation、opacity 和 SH 梯度，并立即用 fused Adam helper 原地更新参数和 moments。不可见 Gaussian 没有当前 view 的新梯度，但 moments 仍按全局 step 推进 decay，因此 backend 额外执行 invisible Adam step，保持 optimizer state 与训练 iteration 对齐。
+
+这个 bridge 的关键约束是：PyTorch 只负责 loss 图和 `grad_image`，CUDA 负责参数更新。Gaussian 参数、moments、densification info 和 metric counts 都被标记为 non-differentiable tensor，避免 autograd 试图构造大规模 `.grad` 张量。当前 v0.4.37 实验进一步把未使用的 forward dummy 输出从 Python 返回值中移除，但仍保留 dummy 作为 differentiable input 来触发 custom backward。
+
+### 8.6 RGB-only ABI 与 3DGS 语义保持
 
 当前维护版本删除 depth/inverse-depth supervision 后，CUDA ABI 回到 RGB-only：forward 输出 RGB 和必要 backward buffers，backward 接收 RGB gradient 并更新 Gaussian 参数。删除 depth path 的动机是降低 ABI、buffer、VRAM 和调试复杂度，并保持与原版 3DGS 的监督目标一致。
 
-### 8.4 数据预加载与 benchmark 清理
+工程优化不应改变核心 3DGS 语义。当前主线仍保留标准 Gaussian 参数化、SH progressive activation、RGB L1+DSSIM loss、front-to-back alpha blending、opacity reset、clone/split 几何规则和 split parent pruning。训练 render、score render 和 metric-count render 使用一致的相机与背景语义；对于带 alpha 或非默认背景的数据，GT 合成也使用同一背景色，否则 high-error mask 和 pruning score 会偏向背景区域。
 
-配置使用积极数据预加载，减少每步 CPU/GPU 数据搬运抖动；同时不预计算全部 rays，避免额外显存占用。benchmark 在 metrics 提取后删除 run 目录下的模型 artifact，以支持 7 scenes repeat=3 的长实验，不让磁盘占用成为实验失败原因。
+Opacity reset 的目的不是改变目标函数，而是避免早期 opacity 饱和导致遮挡关系锁死。对于非黑背景，额外早期 reset 可以减少背景颜色与 opacity 的耦合，使后续 densification/pruning 的信号更接近真实几何和视觉贡献。
+
+### 8.7 Profile 窗口与性能归因
+
+内置 profiler 使用 CUDA event 统计固定 iteration 窗口，例如早期、中期和后期窗口。记录字段包括 `render_ms`、`rgb_loss_ms`、`backward_ms`、`densify_prune_ms`、`optimizer_ms`、`total_ms` 和窗口内 Gaussian 数范围。由于 optimizer 已融合进 backward，正常情况下 `optimizer_ms` 接近 0；如果 `backward_ms` 随 Gaussian 数显著上升，主要瓶颈通常是 backward memory traffic 和 fused Adam 更新，而不是 Python optimizer。
+
+Profile 解释应结合 Gaussian 数和训练阶段。早期窗口主要反映初始化与基础 rasterization；中期窗口通常包含 densification、score render、pruning 和 Morton ordering 的交互；后期窗口更接近固定结构下的纯 render/backward 成本。如果 `densify_prune_ms` 异常增长，应优先检查 FastGS score view sampling、metric-count render 次数、VCP state 同步和候选 mask 构造。如果 `render_ms` 在 Gaussian 数接近时明显变化，则更可能来自 forward/bucket kernel 或 Python/CUDA boundary 改动。
+
+Profiler 本身也有成本：CUDA event 记录和同步会改变热路径 timing。因此论文主结果应报告统一 profiler 设置下的 benchmark；若讨论 production speed，可以额外给出关闭 profiler 的 ablation，但不能把关闭 profiler 的结果与开启 profiler 的 baseline 直接混作同一主表。
+
+### 8.8 数据预加载、实验复现与 benchmark 清理
+
+配置使用积极数据预加载，减少每步 view sampling 后的数据搬运抖动；同时 benchmark 固定 7 scenes、repeat=3、统一 config dir 和 suite name，把训练时间、wall time、PSNR、SSIM、LPIPS、Gaussian 数、VRAM 和 profiler windows 一起落盘。对结构编辑方法来说，只看最终 PSNR 不够，Gaussian 数和 profile 窗口能解释速度变化到底来自 schedule、pruning、score render 还是 kernel 路径。
+
+Benchmark 在 metrics 提取后删除 run 目录下的模型 artifact，以支持 7 scenes repeat=3 的长实验，不让磁盘占用成为实验失败原因。日志、结果 CSV、profile windows 和最终 Gaussian 数仍保留，用于复查失败 run、异常 VRAM 或质量波动。
 
 ## 9. 推荐配置与版本选择
 
