@@ -1,5 +1,51 @@
 # FasterGSFusedRapid Changelog
 
+## fastergsfusedrapid-v0.4.31 rejected local experiment - 2026-05-13
+
+Tested code changes:
+
+- Precomputed the per-step mean-position learning-rate schedule during Gaussian training setup.
+- `update_learning_rate()` now uses an O(1) list lookup inside the hot training loop and falls back to the original `LRDecayPolicy` outside the precomputed range.
+- Reverted this code path after benchmark because it did not pass the strict PSNR gate.
+
+Local config:
+
+- Tested with local `configs/fastergsfusedrapid_v0_4_31_lr_schedule_cache_17k/*.yaml`, copied from v0.4.27.
+- Kept all training, densification, Morton ordering, VCP, AnySplat, loss, and optimizer hyperparameters unchanged.
+- The local config directory is not retained in git because the experiment was rejected.
+
+Motivation:
+
+- v0.4.27 is the current strict-quality baseline with quality floor `28.5626` PSNR.
+- The previous hot loop called `LRDecayPolicy` every iteration; that path evaluates numpy `clip/log/exp` for a scalar value.
+- This version preserves exactly the same scheduler values by evaluating the existing scheduler once during setup, then indexing the cached table during training.
+
+Verification:
+
+- `/usr/local/miniconda3/envs/nerficg/bin/python -m py_compile src/Methods/FasterGSFusedRapid/Model.py src/Methods/FasterGSFusedRapid/Trainer.py`
+- Full 7-scene repeat-3 benchmark:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_31_lr_schedule_cache_17k --repeats 3 --suite-name fastergsfusedrapid_v0_4_31_lr_schedule_cache_17k_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_31_lr_schedule_cache_17k_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 127.1726s | 25.2933 | 0.7443 | 0.2982 | 1,495,010 | 4.8950GiB |
+| bonsai | 3 | 80.0614s | 31.3963 | 0.9360 | 0.2584 | 414,421 | 5.7162GiB |
+| counter | 3 | 75.6297s | 28.5066 | 0.8950 | 0.2838 | 275,512 | 4.9942GiB |
+| garden | 3 | 85.4876s | 26.8018 | 0.8350 | 0.1910 | 872,490 | 2.9982GiB |
+| kitchen | 3 | 87.2964s | 30.7673 | 0.9184 | 0.1758 | 401,406 | 5.5879GiB |
+| room | 3 | 77.4416s | 31.2636 | 0.9119 | 0.3061 | 360,086 | 6.0464GiB |
+| stump | 3 | 86.7177s | 25.8383 | 0.7280 | 0.3025 | 1,184,577 | 2.5728GiB |
+| mean | 21 | 88.5439s | 28.5524 | 0.8527 | 0.2594 | 714,786 | 4.6872GiB |
+
+Interpretation:
+
+- v0.4.31 is faster than v0.4.27 (`88.54s` vs `88.99s`) but falls below the strict quality floor (`28.5524 < 28.5626` PSNR).
+- Do not promote v0.4.31 and do not keep the LR schedule cache in mainline.
+- Keep v0.4.27 as the current strict-quality baseline.
+
 ## fastergsfusedrapid-v0.4.30 rejected local experiment - 2026-05-12
 
 Tested config changes:
