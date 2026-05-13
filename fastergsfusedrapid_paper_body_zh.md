@@ -4,7 +4,7 @@
 
 ## 摘要
 
-3D Gaussian Splatting（3DGS）通过显式 3D Gaussian 表示和可微 rasterization 实现高质量新视角合成，但训练阶段仍然依赖较长的优化过程、频繁的 densification/pruning，以及大规模 Gaussian 参数的反向传播和优化器更新。本文提出 FasterGSFusedRapid，一个保持标准 3DGS 表示和 RGB 重建目标不变的快速训练管线。该管线从三个层面减少训练成本：首先，利用离线 AnySplat 预测的 Gaussian PLY 作为初始化，降低从稀疏 SfM 点云长出完整场景结构的优化距离；其次，引入多视角一致性密度控制，用训练视角上的高误差像素贡献分数约束 clone、split 和 pruning，减少局部梯度导致的冗余 Gaussian 增长；最后，将 RGB rasterization、backward 和 Adam 更新融合到 CUDA 后端中，减少 PyTorch optimizer、梯度张量和 Python 调度开销。当前维护版本为 RGB-only 训练，不使用 Metric3D/depth supervision。方法目标不是改变 3DGS 的表达能力，而是在保留其核心训练语义的前提下，把初始化、密度控制和训练执行路径改造成更快、更可控的系统。
+3D Gaussian Splatting（3DGS）通过显式 3D Gaussian 表示和可微 rasterization 实现高质量新视角合成，但训练阶段仍然依赖较长的优化过程、频繁的 densification/pruning，以及大规模 Gaussian 参数的反向传播和优化器更新。本文提出 FasterGSFusedRapid，一个保持标准 3DGS 表示和 RGB 重建目标不变的快速训练管线。该管线从四个层面减少训练成本：首先，利用离线 AnySplat 预测的 Gaussian PLY 作为初始化，降低从稀疏 SfM 点云长出完整场景结构的优化距离；其次，引入多视角一致性密度控制，用训练视角上的高误差像素贡献分数约束 clone、split 和 pruning，减少局部梯度导致的冗余 Gaussian 增长；第三，在 rasterizer preprocess 中使用 compact-box 风格的 tile contribution 判断，减少无效 Gaussian-tile instance；最后，将 RGB rasterization、backward 和 Adam 更新融合到 CUDA 后端中，减少 PyTorch optimizer、梯度张量和 Python 调度开销。当前维护版本为 RGB-only 训练，不使用 Metric3D/depth supervision。方法目标不是改变 3DGS 的表达能力，而是在保留其核心训练语义的前提下，把初始化、结构控制和训练执行路径改造成更快、更可控的系统。
 
 ## 1. 引言
 
@@ -19,7 +19,7 @@ FasterGSFusedRapid 的设计遵循以下原则：
 - **训练热路径应尽量留在 CUDA 内。** 每个 iteration 都执行的 forward、backward 和 Adam update 应减少 Python/PyTorch 边界开销。
 - **核心 3DGS 语义应保持稳定。** 表示、RGB loss、SH schedule、opacity reset、clone/split 几何规则等核心机制保持与 3DGS 主线一致，避免用不兼容目标换取表面速度。
 
-基于这一逻辑，本文推荐的实验 baseline 使用 v0.4.17 配置：在 v0.4.14 RGB-only 语义基线之上，将 schedule 调整到 17k iteration，并启用前移的 early VCP。后续更短的 16k、15.5k 和 15k 配置可以作为速度下界探索，但由于相对 v0.4.17 的 PSNR 下降接近或超过 0.1dB，不适合作为默认主表版本。
+基于这一逻辑，本文推荐的实验 baseline 使用 v0.4.27 配置：它在 v0.4.23 严格质量基线之上只去除普通训练 loop 中重复的 mode setter 开销，不改变训练数学、采样、densification/pruning、Morton ordering、AnySplat 初始化或 schedule。该版本的 7 scenes repeat=3 平均训练时间为 88.9945s，平均 PSNR 为 28.5726，因此作为当前主线的最新严格质量基线。
 
 ## 2. 方法总览
 
@@ -27,7 +27,7 @@ FasterGSFusedRapid 的设计遵循以下原则：
 
 1. 离线生成 AnySplat Gaussian PLY；
 2. 将 PLY 中的 Gaussian 参数变换到训练数据使用的 Mip-NeRF 360 坐标系；
-3. 用 fused CUDA renderer/backward/Adam 训练标准 3DGS Gaussian；
+3. 用 compact/fused CUDA renderer/backward/Adam 训练标准 3DGS Gaussian；
 4. 用统一结构编辑目标解释 densification 与 pruning；
 5. 在 action-specific callback 中计算结构信号，并分别执行 clone/split 与 budgeted/delayed pruning。
 
@@ -42,7 +42,7 @@ flowchart LR
     C --> E[Initialize 3DGS Gaussians]
     D --> F[Sample training view]
     E --> F
-    F --> G[Fused CUDA RGB rasterization]
+    F --> G[Compact/fused CUDA RGB rasterization]
     G --> H[RGB L1 + DSSIM loss]
     H --> I[Fused CUDA backward + Adam update]
     I --> J{Action clock}
@@ -67,13 +67,13 @@ flowchart LR
 | 表示与目标 | 标准 anisotropic Gaussian + RGB L1/DSSIM | 保持同一 Gaussian 参数化和 RGB photometric loss | 速度提升不是靠换表示或换监督目标获得，便于和 3DGS 主线对照 |
 | 密度增长 | 主要依赖 view-space gradient clone/split | signed/abs gradient 仍保留，但必须通过 multi-view high-error contribution gate | 减少单视角噪声、遮挡边缘和局部梯度 spike 造成的冗余 Gaussian 增长 |
 | 删除策略 | opacity/scale 等局部规则 | opacity/scale + VCP score + confirmation/budget + split parent replacement | 删除更接近“低贡献/不稳定结构优先”，并控制一次 pruning 的风险 |
+| Rasterizer 覆盖 | 3-sigma bbox 会产生较多 Gaussian-tile pairs | compact-box 风格 tile contribution test，只保留有效 tile instance | 减少无效 splat/tile 工作量，降低排序和 blend 压力 |
 | 训练热路径 | rasterization/backward 后由 PyTorch optimizer 更新参数 | custom autograd bridge 只传 `grad_image`，CUDA backward 中融合梯度计算和 Adam 更新 | 减少 `.grad` tensor、Python optimizer 调度和多 kernel update 开销 |
 | 参数状态 | PyTorch 参数和 optimizer state 由框架隐式维护 | 参数 tensor、Adam moments、densification info、VCP hits 在 prune/sort/split 时显式同步 | 适配动态 Gaussian 集合，同时避免 state 错配导致的隐性训练错误 |
 | 内存局部性 | Densification 后参数顺序自然 append | 周期性 Morton/z-order 重新排列参数和 moments | 改善 preprocess、blend、backward、Adam 中按 Gaussian id 访问的 locality |
 | 并行执行 | tile-based splatting | 保留 tile sort，并进一步使用 bucket 化调度长 tile primitive list | 缓解不同 tile primitive 数差异造成的负载不均 |
-| 工程复现 | 训练和实验产物较松散 | 版本化 config、CUDA event profile windows、benchmark cleanup、结果 CSV | 每个改动都能和 train time、PSNR、Gaussian 数、VRAM、profile 窗口对应起来 |
 
-因此本文的贡献可以概括为“保留 3DGS 的渲染语义，重写训练系统”。AnySplat 初始化解决早期结构搜索成本，multi-view 结构编辑解决冗余增长和删除风险，fused CUDA backend 解决每步数值更新成本，Morton/bucket/cache/profile 解决长实验中的内存局部性、负载均衡和可诊断性。
+因此本文的贡献可以概括为“保留 3DGS 的渲染语义，重写训练系统”。AnySplat 初始化解决早期结构搜索成本，multi-view 结构编辑解决冗余增长和删除风险，compact tile culling 减少无效 rasterization work，fused CUDA backend 解决每步数值更新成本，Morton/bucket/cache 解决内存局部性和负载均衡问题。
 
 这个对照也说明哪些部分不应被过度声称。当前维护版没有引入新的 Gaussian primitive，没有改变 alpha blending 公式，没有把 Metric3D/depth supervision 作为主线，也没有实现完整的 learned controller 或所有扩展结构因子。它的优势来自一组互相配合的训练系统改造，而不是单一 trick。
 
@@ -232,7 +232,7 @@ $$
 
 在 3DGS 训练中，每个 iteration 都要执行 rasterization、loss backward 和 optimizer update。当 Gaussian 数量达到数十万到数百万时，训练时间主要集中在 backward 和 Adam 更新。原版 PyTorch optimizer 路径需要构造 `.grad` 张量，并由 Python/PyTorch 调度多个参数组的 Adam kernel。FasterGSFusedRapid 将这些高频数值训练语义融合到 CUDA backend 中。
 
-这并不意味着 Python 不再参与训练。Python 仍负责 view sampling、RGB loss 组合、callback 调度、clone/split/prune 的动态 tensor 管理和 benchmark 管理。CUDA 负责每步高频路径：RGB rasterization、alpha/bucket backward、projection/covariance/SH backward、visible/invisible Adam update、densification statistics 和 metric-count render。
+这并不意味着 Python 不再参与训练。Python 仍负责 view sampling、RGB loss 组合、callback 调度、clone/split/prune 的动态 tensor 管理和实验配置管理。CUDA 负责每步高频路径：RGB rasterization、alpha/bucket backward、projection/covariance/SH backward、visible/invisible Adam update、densification statistics 和 metric-count render。
 
 ### 4.2 Autograd bridge
 
@@ -793,7 +793,7 @@ $$
 | 系统 | 资源预算门控 | $r_i^{\mathrm{budget}}=\mathbb{1}[N<N_{\max}]S_i$ | 只有在 Gaussian 数和 VRAM 预算允许时放宽增长 |
 | 系统 | temporal consistency | $r_i^{\mathrm{time}}=\operatorname{EMA}_{\tau}(h_{i,\tau})$ | 动态场景中跨时间帧稳定高贡献才更适合 densify |
 
-这些扩展与本文的预算受限结构编辑观点一致，但需要额外实验验证。为保持当前方法清晰和可复现，v0.4.17 baseline 不包含这些未实现信号。
+这些扩展与本文的预算受限结构编辑观点一致，但需要额外实验验证。为保持当前方法清晰和可复现，v0.4.27 baseline 不包含这些未实现信号。
 
 ## 7. 删除因子与减少策略
 
@@ -1053,31 +1053,30 @@ $$
 | 系统 | temporal consistency | $q_i^{\mathrm{time}}=\mathbb{1}[\operatorname{EMA}_{\tau}(h_{i,\tau})<\tau_h]$ | 动态场景中跨时间帧稳定低贡献才更适合删除 |
 | 验证 | 软删除验证 | $\Delta\mathcal{L}_i^{\mathrm{sup}}=\mathcal{L}(\sigma(o_i)\leftarrow \epsilon)-\mathcal{L}$ | 先临时压低 opacity，再确认是否真的可以删除 |
 
-这些扩展与第 5 章的统一目标一致，但需要单独实验验证。当前 v0.4.17/v0.4.27 主线不包含这些未实现删除因子。
+这些扩展与第 5 章的统一目标一致，但需要单独实验验证。当前 v0.4.27 主线不包含这些未实现删除因子。
 
 ## 8. 工程实现与训练稳定性细节
 
-本章只讨论已经落在当前代码主线中的工程实现。与原版 3DGS 相比，FasterGSFusedRapid 没有改变 tile-based splatting 的基本语义，而是在训练执行路径上做了三层改造：GPU rasterizer 层减少无效 instance、改善排序和 backward 调度；optimizer 层把 PyTorch 参数更新改成 fused CUDA update；系统层控制显存、缓存、profile 和 benchmark artifact。
+本章讨论当前主线已经实现的工程路径。与原版 3DGS 相比，FasterGSFusedRapid 不改变 tile-based splatting、front-to-back alpha blending 和 RGB loss，而是把训练执行拆成四个互相配合的优化层：compact rasterization 减少无效 Gaussian-tile work，bucket 化 backward 缓解 tile 间负载不均，fused CUDA Adam 降低每步参数更新开销，显式状态同步保证动态结构编辑后 optimizer state 不错位。
 
-| 工程层 | 原版 3DGS 主要做法 | 当前实现 | 对速度/稳定性的影响 |
+| 工程层 | 原版 3DGS 主要做法 | 当前实现 | 作用 |
 | --- | --- | --- | --- |
-| Rasterizer preprocess | 投影 Gaussian，生成 tile/Gaussian pairs | 并行 preprocess，精确检查有效 tile，短覆盖顺序处理、长覆盖 warp cooperative 处理 | 减少无效 Gaussian-tile instance，并降低大 Gaussian 的单线程长尾 |
-| Sorting 与 tile range | 生成 key/value 并 radix sort，按 tile range blend | 保留 depth/tile radix sort，并拆出 instance ranges 与 bucket counts | 保持 3DGS front-to-back 语义，同时为 bucket backward 提供结构 |
-| Blend/backward 调度 | tile-local forward/backward | forward 保存 per-bucket color/transmittance，backward 以 bucket 为单位启动 | 重 tile 被拆成更多 work item，缓解 tile 间负载不均 |
-| Optimizer | PyTorch `.grad` + Adam step | `_Rasterize.backward` 直接调用 CUDA backward，并在 CUDA 中更新参数和 moments | 避免大 `.grad` tensor 和 Python optimizer 调度 |
-| 动态结构状态 | 参数由 PyTorch optimizer 管理 | prune/sort/split 时显式同步参数、moments、densification info、VCP hits | 防止动态 Gaussian 集合和 optimizer state 错配 |
-| 内存管理 | 依赖默认 allocator 和频繁 tensor realloc | `expandable_segments`、必要时 `empty_cache`、空 tensor 和 pose cache | 降低长实验中的碎片化和 Python/CUDA 边界开销 |
-| 可诊断性 | 主要看最终质量和训练时间 | 固定 profile windows，记录 render/loss/backward/densify-prune/Gaussian range | 能把速度变化归因到 kernel、结构编辑或 Python 调度 |
+| Tile 覆盖 | 由投影 bbox 产生 Gaussian-tile pairs | compact-box 风格 contribution test，只保留有效 tile instance | 减少 instance 数、排序量和 blend/backward work |
+| Tile 排序 | key/value radix sort 后按 tile range blend | 保留 depth/tile radix sort，并记录 instance range、bucket count、processed count | 保持 3DGS 可见性语义，为 backward 提供可复用结构 |
+| Blend/backward | tile-local traversal | forward 保存 per-bucket color/transmittance，backward 以 bucket 为单位调度 | 将重 tile 拆成多个 CUDA work item |
+| Optimizer | PyTorch `.grad` + Adam step | `_Rasterize.backward` 直接调用 CUDA backward，并在 CUDA 中更新参数和 moments | 减少大梯度张量和 Python optimizer 调度 |
+| 动态状态 | 参数和 optimizer state 由框架隐式维护 | prune/sort/split 同步参数、moments、densification info、VCP hits | 适配不断变化的 Gaussian 集合 |
+| 内存与缓存 | 依赖默认 allocator 和临时 tensor | `expandable_segments`、必要时 `empty_cache`、pose cache、empty tensor sentinel | 降低碎片化和 Python/CUDA 边界开销 |
 
-这张表也限定了本文的工程 claim：当前主线实现了 multi-view score、bucket backward、fused Adam、Morton/cache/profile 等路径；FastGS 论文中的完整 compact box、1-minute 方案中的 Neural-Gaussian/pose refinement、Metric3D depth supervision 不属于当前维护版主贡献。
+这张表也限定了本文的工程 claim：当前主线使用 compact-box 风格 tile culling、bucket backward、fused Adam、Morton ordering 和缓存策略；1-minute 方案中的 Neural-Gaussian、pose refinement 和 Metric3D depth supervision 不属于当前维护版主贡献。
 
 ### 8.1 显存控制、CUDA allocator 与缓存
 
 FasterGSFusedRapid 的显存压力主要来自三类对象：Gaussian 参数和 Adam moments、rasterization 中间 buffers、训练图像和相机数据。当前配置使用 `PRELOADING_LEVEL=2` 将训练图像预加载到 VRAM，减少每步 CPU/GPU 数据搬运抖动；同时不预计算全部 rays，因为 3DGS rasterization 直接由相机参数、Gaussian 参数和 tile grid 驱动，提前展开 ray tensor 会额外占用显存且不进入主热路径。
 
-训练开始时优先启用 PyTorch CUDA allocator 的 `expandable_segments`。如果当前环境不支持该 allocator 选项，则在 densification/pruning 等改变 tensor 形状的阶段后显式 `torch.cuda.empty_cache()`，降低长实验中的碎片化风险。这个策略不改变数值计算，但影响 7 scenes repeat=3 benchmark 的稳定性：密集 append、split parent prune 和 final pruning 都会造成大 tensor 重新分配，碎片化会把本来可用的显存变成不可连续分配的空间。
+训练开始时优先启用 PyTorch CUDA allocator 的 `expandable_segments`。如果当前环境不支持该 allocator 选项，则在 densification/pruning 等改变 tensor 形状的阶段后显式 `torch.cuda.empty_cache()`，降低长时间训练中的碎片化风险。这个策略不改变数值计算，但能提高动态 Gaussian 集合下的大 tensor 重新分配稳定性。
 
-Renderer 侧还缓存两类小对象。第一，训练 view 的 `w2c` 和 camera position 会按 view 内部 pose 对象 id 缓存为 contiguous CUDA tensor，避免每次 render 重复构造相机张量。第二，空 `float32` 和 `bool` sentinel tensor 会按 device 复用，用于无 densification info 或无 metric map 的 render 调用，避免在 Python/CUDA 边界反复创建 `torch.empty(0)`。这些优化单次收益很小，但它们处在每步训练和多视角 score render 的高频路径上。
+Renderer 侧缓存两类小对象。第一，训练 view 的 `w2c` 和 camera position 会按 view 内部 pose 对象 id 缓存为 contiguous CUDA tensor，避免每次 render 重复构造相机张量。第二，空 `float32` 和 `bool` sentinel tensor 会按 device 复用，用于无 densification info 或无 metric map 的 render 调用，避免在 Python/CUDA 边界反复创建 `torch.empty(0)`。这些优化单次收益很小，但它们处在每步训练和多视角 score render 的高频路径上。
 
 ### 8.2 Morton ordering 与参数局部性
 
@@ -1095,21 +1094,30 @@ $$
 
 这里 $\Theta_i$ 表示 Gaussian 参数，$\mathbf{m}_i,\mathbf{v}_i$ 表示 Adam moments。该操作不改变集合 $\{G_i\}$，只改变存储顺序。
 
-### 8.3 并行投影、tile instance 与排序
+### 8.3 Compact box 与并行 tile instance 生成
 
-CUDA forward 首先对每个 Gaussian 并行执行 preprocess：世界坐标到相机坐标投影、3D covariance 到 2D conic 的变换、视锥和半径过滤、tile 覆盖估计、SH 颜色计算和 alpha 相关预处理。对每个仍有效的 Gaussian，backend 生成若干 `(tile_id, depth, gaussian_id)` instance。有效 instance 数 $M$ 通常远小于 `N * n_tiles`，因此实现不会为每个 Gaussian 枚举整张图像，而是只展开其投影椭圆可能影响的 tile。
+原版 3DGS 的 tile assignment 以投影 bbox 为基础，bbox 内的 tile 不一定都有实际贡献。FastGS/Speedy-Splat 一类方法指出，这会产生多余 Gaussian-tile pairs，从而增加排序、blend 和 backward 成本。当前实现采用 compact-box 风格的 tile contribution 判断：在 preprocess 中先得到每个 Gaussian 的屏幕 bounds，再对候选 tile 判断该 Gaussian 在 tile 内可能达到的最大贡献；只有满足贡献阈值的 tile 才进入 instance list。
 
-Instance 随后按 tile 和 depth 进行 radix sort。排序后的连续区间对应每个 tile 的 front-to-back primitive 列表，blend kernel 可以按 tile 独立并行执行 alpha compositing。这个设计保留了 3DGS 的深度有序 alpha blending 语义，同时把全局可见性问题转化为大量 tile-local 的并行工作。
+设 tile $T$ 内对 Gaussian $i$ 的最小 Mahalanobis power proxy 为
 
-对于覆盖 tile 很少的 Gaussian，tile 计数可以在线程内顺序完成；对于覆盖 tile 很多的 Gaussian，kernel 使用 warp-level cooperative 路径分摊 tile contribution 检查。这样可以避免大 Gaussian 或近相机 Gaussian 把单个线程拖成长尾。
+$$
+P_i(T)=
+\min_{\mathbf{p}\in T}
+\frac{1}{2}
+(\mathbf{p}-\mathbf{u}_i)^\top Q_i(\mathbf{p}-\mathbf{u}_i).
+$$
 
-### 8.4 Bucket 化 blend 与负载均衡
+当 $P_i(T)$ 已经大于 alpha 截断对应阈值时，该 Gaussian 在 tile 内对所有像素的贡献都低于有效 alpha 阈值，可以跳过该 tile。代码中 `will_primitive_contribute` 使用 tile corner/edge 上的最大贡献点近似这个判断；`compute_exact_n_touched_tiles` 先统计真实 touched tile 数，再只为这些 tile 生成 instance。
 
-不同 tile 的 primitive 数差异很大：背景 tile 可能几乎没有 Gaussian，边缘或近景 tile 可能有很长的有序列表。若一个 CUDA block 固定处理一个 tile，重 tile 会成为长尾，轻 tile 又浪费并行度。当前 backend 在 tile range 之上构建 bucket，将每个 tile 的 primitive 列表按固定粒度拆分成多个 bucket，并记录 bucket 到 tile 的映射。
+为了避免大 Gaussian 或近相机 Gaussian 拖慢单个线程，tile 统计采用两级策略：覆盖 tile 很少时在线程内顺序处理；覆盖 tile 较多时使用 warp-level cooperative 路径，把剩余 tile contribution check 分摊到一个 warp 内。这样既保留 compact coverage 的精确性，又降低 tile count 差异带来的控制流长尾。
 
-Forward blend 和 backward blend 都以 bucket 为调度单位。每个 bucket 处理同一个 tile 的一段 primitive，并利用 tile 内像素并行计算颜色、transmittance、contributor count 和反向传播所需的中间量。这样既保留了 tile 内 front-to-back 顺序，又让包含大量 primitive 的 tile 被拆成更多 CUDA work item，从而改善负载均衡。
+### 8.4 Sorting、bucket 化 blend 与负载均衡
 
-Backward 中，bucket 还复用 forward 保存的 tile final transmittance、processed count 和 color/transmittance buffer。这样可以避免完全重放 forward 的所有中间状态，同时仍能按 3DGS alpha compositing 公式恢复梯度。
+有效 instance 生成后，backend 先按 depth 对 visible primitives 排序，再生成 tile instance keys，并按 tile id 进行 radix sort。排序后的连续区间对应每个 tile 的 front-to-back primitive 列表，blend kernel 可以按 tile 独立执行 alpha compositing。这个设计保留 3DGS 的可见性语义：每个 tile 内仍按深度近似顺序执行 front-to-back blending。
+
+不同 tile 的 primitive 数差异很大。背景 tile 可能几乎没有 Gaussian，近景边缘 tile 可能有很长的 primitive list。若 backward 固定一个 block 处理一个 tile，重 tile 会成为长尾。当前 backend 在 tile range 之上构建 bucket，将每个 tile 的 primitive list 按 32 个 primitive 为粒度拆成多个 bucket，并记录 bucket 到 tile 的映射。
+
+Forward blend 在每 32 个 primitive 边界保存当前颜色和 transmittance，形成 `bucket_color_transmittance`；同时记录每个 tile 的 final transmittance、pixel processed count 和 max processed count。Backward 以 bucket 为调度单位，读取这些中间状态恢复 alpha compositing 梯度。这样不需要完整保存每个 primitive/pixel 的所有中间量，也不需要完全重放 forward 状态；重 tile 会自然产生更多 bucket，从而改善负载均衡。
 
 ### 8.5 Torch autograd bridge 与 fused CUDA 更新
 
@@ -1117,7 +1125,7 @@ Backward 中，bucket 还复用 forward 保存的 tile final transmittance、pro
 
 在 `_C.backward` 内部，CUDA 同时完成两件事：计算可见 Gaussian 的 mean、scale、rotation、opacity 和 SH 梯度，并立即用 fused Adam helper 原地更新参数和 moments。不可见 Gaussian 没有当前 view 的新梯度，但 moments 仍按全局 step 推进 decay，因此 backend 额外执行 invisible Adam step，保持 optimizer state 与训练 iteration 对齐。
 
-这个 bridge 的关键约束是：PyTorch 只负责 loss 图和 `grad_image`，CUDA 负责参数更新。Gaussian 参数、moments、densification info 和 metric counts 都被标记为 non-differentiable tensor，避免 autograd 试图构造大规模 `.grad` 张量。当前 v0.4.37 实验进一步把未使用的 forward dummy 输出从 Python 返回值中移除，但仍保留 dummy 作为 differentiable input 来触发 custom backward。
+这个 bridge 的关键约束是：PyTorch 只负责 loss 图和 `grad_image`，CUDA 负责参数更新。Gaussian 参数、moments、densification info 和 metric counts 都被标记为 non-differentiable tensor，避免 autograd 构造大规模 `.grad` 张量。v0.4.27 的主线不改变这个数学路径，只减少普通训练 loop 中重复 mode setter 的 Python 侧固定开销。
 
 ### 8.6 RGB-only ABI 与 3DGS 语义保持
 
@@ -1127,48 +1135,43 @@ Backward 中，bucket 还复用 forward 保存的 tile final transmittance、pro
 
 Opacity reset 的目的不是改变目标函数，而是避免早期 opacity 饱和导致遮挡关系锁死。对于非黑背景，额外早期 reset 可以减少背景颜色与 opacity 的耦合，使后续 densification/pruning 的信号更接近真实几何和视觉贡献。
 
-### 8.7 Profile 窗口与性能归因
-
-内置 profiler 使用 CUDA event 统计固定 iteration 窗口，例如早期、中期和后期窗口。记录字段包括 `render_ms`、`rgb_loss_ms`、`backward_ms`、`densify_prune_ms`、`optimizer_ms`、`total_ms` 和窗口内 Gaussian 数范围。由于 optimizer 已融合进 backward，正常情况下 `optimizer_ms` 接近 0；如果 `backward_ms` 随 Gaussian 数显著上升，主要瓶颈通常是 backward memory traffic 和 fused Adam 更新，而不是 Python optimizer。
-
-Profile 解释应结合 Gaussian 数和训练阶段。早期窗口主要反映初始化与基础 rasterization；中期窗口通常包含 densification、score render、pruning 和 Morton ordering 的交互；后期窗口更接近固定结构下的纯 render/backward 成本。如果 `densify_prune_ms` 异常增长，应优先检查 FastGS score view sampling、metric-count render 次数、VCP state 同步和候选 mask 构造。如果 `render_ms` 在 Gaussian 数接近时明显变化，则更可能来自 forward/bucket kernel 或 Python/CUDA boundary 改动。
-
-Profiler 本身也有成本：CUDA event 记录和同步会改变热路径 timing。因此论文主结果应报告统一 profiler 设置下的 benchmark；若讨论 production speed，可以额外给出关闭 profiler 的 ablation，但不能把关闭 profiler 的结果与开启 profiler 的 baseline 直接混作同一主表。
-
-### 8.8 数据预加载、实验复现与 benchmark 清理
-
-配置使用积极数据预加载，减少每步 view sampling 后的数据搬运抖动；同时 benchmark 固定 7 scenes、repeat=3、统一 config dir 和 suite name，把训练时间、wall time、PSNR、SSIM、LPIPS、Gaussian 数、VRAM 和 profiler windows 一起落盘。对结构编辑方法来说，只看最终 PSNR 不够，Gaussian 数和 profile 窗口能解释速度变化到底来自 schedule、pruning、score render 还是 kernel 路径。
-
-Benchmark 在 metrics 提取后删除 run 目录下的模型 artifact，以支持 7 scenes repeat=3 的长实验，不让磁盘占用成为实验失败原因。日志、结果 CSV、profile windows 和最终 Gaussian 数仍保留，用于复查失败 run、异常 VRAM 或质量波动。
-
 ## 9. 推荐配置与版本选择
 
-本文建议将 v0.4.17 作为论文主实验 baseline：
+本文建议将 v0.4.27 作为当前论文主实验 baseline。它继承 v0.4.23 的 17k schedule、density/Morton end、early VCP、AnySplat 初始化、RGB-only CUDA ABI 和所有 densification/pruning 阈值，只在普通训练 iteration 中避免重复执行 `model.train()`、`dataset.train()` 和 `loss.train()`。因此 v0.4.27 是语义等价的热路径整理，而不是新的结构控制策略。
 
-- v0.4.14 是 RGB-only 语义基线；
-- v0.4.17 在 v0.4.14 基础上使用 17k schedule、density/Morton end 14k、early VCP 14.5k 起；
-- v0.4.17 相比 v0.4.14 平均训练时间更短，PSNR 下降约 0.020dB；
-- v0.4.21/v0.4.22 虽然接近 80s，但相对 v0.4.17 的 PSNR 下降超过或接近 0.1dB，因此只作为速度下界探索。
+v0.4.27 的 7 scenes repeat=3 均值为：
 
-因此论文主线应表述为：我们以标准 3DGS 表示和 RGB loss 为基础，通过 AnySplat 初始化、多视角一致性密度控制和 fused CUDA training backend，在质量基本保持的前提下缩短训练时间。更激进的 schedule 可以作为 speed-quality trade-off ablation，而不是默认方法。
+| version | train time | PSNR | SSIM | LPIPS | n_gaussians |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| v0.4.27 | 88.9945s | 28.5726 | 0.8526 | 0.2595 | 713,310 |
 
-可以把 schedule 选择写成一个受质量约束的预算选择问题。设训练预算为 $N$，质量指标为 $Q(N)$，训练时间为 $T(N)$。我们选择
+相比 v0.4.23，v0.4.27 平均训练时间从 89.70s 降到 88.99s，同时 PSNR 从 28.5601 升到 28.5726。由于该改动不改变训练数学和结构编辑语义，本文将它作为新的严格质量基线。后续更激进配置或代码实验只有在满足
+
+$$
+Q_{\mathrm{candidate}} \ge Q_{\mathrm{v0.4.27}} - 0.01
+$$
+
+时，才应替换主 baseline。以 PSNR 衡量，这一门槛为
+
+$$
+\mathrm{PSNR}_{\mathrm{candidate}} \ge 28.5626.
+$$
+
+可以把版本选择写成受质量约束的预算问题。设训练预算为 $N$，质量指标为 $Q(N)$，训练时间为 $T(N)$，则选择
 
 $$
 N^\star =
 \arg\min_N T(N)
 \quad
 \mathrm{s.t.}\quad
-Q(N_{\mathrm{ref}})-Q(N) \le \delta_Q,
+Q(N_{\mathrm{ref}})-Q(N) \le \delta_Q.
 $$
 
-其中 $N_{\mathrm{ref}}$ 可取 v0.4.14 的 18k 语义基线，$\delta_Q$ 是可接受质量下降阈值。按当前 repeat=3 观察，v0.4.17 的 17k schedule 满足较小 PSNR 下降，而 15.5k/15k 已接近或超过 $0.1$dB 级别损失，因此不作为主配置。
-
-该形式化表述也提醒实验部分应同时报告 $T(N)$ 和 $Q(N)$，而不是只报告最快配置。
+当前 $N_{\mathrm{ref}}$ 取 v0.4.27，$\delta_Q=0.01$dB。这个定义能避免只追求更短训练时间而牺牲主质量指标。
 
 ## 10. 讨论
 
-FasterGSFusedRapid 的速度来自多层叠加，而非单一技巧。AnySplat 初始化减少早期结构搜索；multi-view score 限制无效 densification；pruning 控制 Gaussian 数量；fused CUDA backend 降低每步 backward/Adam 开销；Morton ordering、no-grad score render、empty tensor cache 和 benchmark cleanup 则降低工程层面的重复成本。
+FasterGSFusedRapid 的速度来自多层叠加，而非单一技巧。AnySplat 初始化减少早期结构搜索；multi-view score 限制无效 densification；pruning 控制 Gaussian 数量；compact-box 风格 tile culling 减少无效 rasterization instance；bucket backward 改善重 tile 的负载均衡；fused CUDA backend 降低每步 backward/Adam 开销；Morton ordering 和缓存策略降低工程层面的重复成本。
 
 从复杂度角度看，设当前 Gaussian 数为 $N$，每个 view 产生的有效 Gaussian-tile instance 数为 $M$，像素数为 $P$。原始训练每步的主成本可粗略写为
 
@@ -1182,10 +1185,12 @@ $$
 
 FasterGSFusedRapid 分别作用在这些项上：
 
+- AnySplat 初始化允许减少总 step 数 $N_{\mathrm{iter}}$；
 - multi-view score 和 pruning 降低中后期 $N$ 和 $M$ 的增长；
+- compact tile culling 直接降低 $M$；
+- bucket backward 降低 tile primitive 分布不均造成的长尾；
 - fused backward/Adam 将 $\mathcal{C}_{\mathrm{backward}}$ 和 $\mathcal{C}_{\mathrm{adam}}$ 合并，减少中间梯度写回和 kernel launch；
-- Morton ordering 改善以 Gaussian id 访问参数和 moments 的局部性；
-- AnySplat 初始化允许减少总 step 数 $N_{\mathrm{iter}}$。
+- Morton ordering 改善以 Gaussian id 访问参数和 moments 的局部性。
 
 因此总训练时间可以理解为
 
@@ -1198,81 +1203,18 @@ T_{\mathrm{train}}
 + \sum_{k}\mathcal{C}_{\mathrm{mutation}}^{(k)}.
 $$
 
-其中 score 和 mutation 是低频 callback 成本。方法有效的条件是：额外的 $\mathcal{C}_{\mathrm{score}}$ 能被更小的 $N_t/M_t$、更短的 $N_{\mathrm{iter}}$ 和 fused backend 节省抵消。当前 v0.4.17 baseline 正是这个折中点。
+其中 score 和 mutation 是低频结构编辑成本。方法有效的条件是：额外的 $\mathcal{C}_{\mathrm{score}}$ 能被更小的 $N_t/M_t$、更短的 $N_{\mathrm{iter}}$ 和 fused backend 节省抵消。v0.4.27 目前是这一约束下的推荐折中点。
 
-该方法保持质量的关键在于没有改变 3DGS 的核心优化目标。Gaussian 表示、RGB photometric loss、SH schedule、opacity reset、clone/split 几何规则和 alpha blending 语义都被保留。变化主要发生在初始化、候选筛选、执行路径和训练 schedule 上。因此，当质量下降时，主要应从 schedule、pruning 强度和 score threshold 的取舍上解释，而不是把它归因于表示能力变化。
+该方法保持质量的关键在于没有改变 3DGS 的核心优化目标。Gaussian 表示、RGB photometric loss、SH schedule、opacity reset、clone/split 几何规则和 alpha blending 语义都被保留。变化主要发生在初始化、候选筛选、tile work 裁剪、执行路径和训练 schedule 上。因此，当质量下降时，主要应从 schedule、pruning 强度、score threshold 和初始化坐标一致性解释，而不是把它归因于表示能力变化。
 
-当前版本也有明确边界。第一，AnySplat 初始化是离线 prior，若数据集或相机坐标处理不一致，训练会失败或质量下降。第二，多视角 score render 有额外成本，必须通过减少冗余 Gaussian 或缩短 schedule 抵消。第三，过度压缩 iteration 会带来可测的 PSNR 损失；根据当前 repeat=3 结果，v0.4.17 是更稳妥的主线，15.5k/15k 只适合作为速度边界。
+当前版本也有明确边界。第一，AnySplat 初始化是离线 prior，若数据集或相机坐标处理不一致，训练会失败或质量下降。第二，多视角 score render 有额外成本，必须通过减少冗余 Gaussian 或缩短 schedule 抵消。第三，compact tile culling 只减少低贡献 tile instance，不改变 alpha blending 公式；如果阈值过激，可能破坏细薄结构，因此当前实现保持与 alpha 截断一致的保守判断。第四，过度压缩 iteration 会带来可测质量损失，必须受 v0.4.27 的严格质量门槛约束。
 
-## 11. 实验部分待补数据
+## 11. 实验表格占位
 
-实验现在先不写结论。为了完成论文实验部分，我需要以下数据。
+实验部分应服务于本文主线，而不是展开工程日志。建议最终只保留三组表：
 
-### 11.1 主结果表
+1. 主结果表：原版 3DGS、FastGS/RapidGS、Faster-GS/FasterGSFused、FasterGSFusedRapid v0.4.27。
+2. 结构控制 ablation：无 multi-view score、只 densify gate、只 VCP、完整 v0.4.27。
+3. 工程 ablation：无 AnySplat 初始化、无 compact tile culling、无 fused Adam、无 Morton/cache、完整 v0.4.27。
 
-需要对同一批 Mip-NeRF 360 scenes、同一硬件、同一 evaluation protocol 统计：
-
-- 原版 3DGS：train time、wall time、PSNR、SSIM、LPIPS、final Gaussian count、peak VRAM；
-- FasterGSFused：同上；
-- RapidGS/FastGS reference：同上；
-- FasterGSFusedRapid v0.4.17：同上；
-- 每个方法最好 repeat=3，至少主方法 repeat=3。
-
-当前我们已有 v0.4.17 的 7 scenes repeat=3，可作为主方法数据。还需要对照方法是否也能在同环境 repeat=3 跑齐。
-
-### 11.2 Ablation 表
-
-建议补以下 ablation：
-
-| Ablation | 目的 | 需要数据 |
-| --- | --- | --- |
-| v0.4.14 vs v0.4.17 | 证明推荐 schedule 的质量/速度折中 | 7 scenes repeat=3 已有 |
-| v0.4.17 vs v0.4.19/v0.4.21/v0.4.22 | 展示 speed-quality trade-off | 7 scenes repeat=3 已有大部分 |
-| with/without early VCP | 证明 VCP 在短 schedule 下有效 | v0.4.19 vs v0.4.20 已有 |
-| with/without AnySplat initialization | 证明初始化贡献 | 需要同 schedule 下禁用 AnySplat 的全场景或至少代表场景 |
-| with/without multi-view score gate | 证明 density-control 贡献 | 需要关闭 importance gate 的配置和结果 |
-| fused backend vs non-fused backend | 证明 backend 贡献 | 需要相同 density policy 下的 backend 对照，或明确已有 FasterGSFused/RapidGS 对照语义差异 |
-| RGB-only vs depth branch | 解释删除 Metric3D | 已有 bicycle 试验，可补更多 scene 或写成负结果 |
-
-### 11.3 Profile 数据
-
-需要把训练时间拆成：
-
-- render；
-- loss；
-- backward；
-- densify/prune；
-- optimizer；
-- total；
-- Gaussian count。
-
-建议至少给 bicycle 的三段窗口：
-
-- early：1000-1100；
-- mid：14000-14100 或 v0.4.17 对应中段；
-- late：接近训练尾部，例如 16000-16100。
-
-如果要对比 RapidGS，需要同样 profiler 窗口，否则只能定性说明。
-
-### 11.4 离线初始化成本
-
-如果论文声称“训练时间”不包含 AnySplat，需要明确报告：
-
-- AnySplat/VGGT 权重路径和版本；
-- 每个 scene 离线生成 PLY 的时间；
-- 生成 PLY 的 GPU/CPU 环境；
-- PLY Gaussian 数量；
-- 是否把离线成本计入 total reconstruction time。
-
-这部分很重要，因为当前方法把 prior generation 前移到训练前。论文可以分别报告 optimization time 和 end-to-end time。
-
-### 11.5 质量可视化
-
-需要准备：
-
-- 每个方法的 representative render；
-- error map；
-- Gaussian count 或 density visualization；
-- 至少包含 bicycle、garden、room/indoor、stump 这类不同难度场景。
-
-文字结论应避免只看 PSNR。SSIM/LPIPS 和 visual artifacts 对这类 fast 3DGS 训练同样重要。
+表格字段建议统一为 train time、PSNR、SSIM、LPIPS、final Gaussian count 和 peak VRAM。文字结论应强调 speed-quality-compactness trade-off，而不是只看单一指标。
