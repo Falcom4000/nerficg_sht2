@@ -57,6 +57,26 @@ flowchart LR
     J -- normal step --> F
 ```
 
+### 2.1 相比原版 3DGS 的系统性进步
+
+原版 3DGS 已经给出了高质量的显式 Gaussian 表示和 tile-based differentiable rasterization。FasterGSFusedRapid 的进步不在于替换这套表示，而在于把训练系统中最耗时、最容易产生冗余、最难复现实验的环节分别工程化。可以按以下维度理解：
+
+| 维度 | 原版 3DGS | FasterGSFusedRapid | 主要收益 |
+| --- | --- | --- | --- |
+| 初始化 | 从 SfM sparse point cloud 初始化 | 从 AnySplat Gaussian PLY 初始化，并同步应用 Mip-NeRF 360 world transform | 降低从稀疏结构长成完整场景的优化距离，使 17k/18k schedule 成为可行选择 |
+| 表示与目标 | 标准 anisotropic Gaussian + RGB L1/DSSIM | 保持同一 Gaussian 参数化和 RGB photometric loss | 速度提升不是靠换表示或换监督目标获得，便于和 3DGS 主线对照 |
+| 密度增长 | 主要依赖 view-space gradient clone/split | signed/abs gradient 仍保留，但必须通过 multi-view high-error contribution gate | 减少单视角噪声、遮挡边缘和局部梯度 spike 造成的冗余 Gaussian 增长 |
+| 删除策略 | opacity/scale 等局部规则 | opacity/scale + VCP score + confirmation/budget + split parent replacement | 删除更接近“低贡献/不稳定结构优先”，并控制一次 pruning 的风险 |
+| 训练热路径 | rasterization/backward 后由 PyTorch optimizer 更新参数 | custom autograd bridge 只传 `grad_image`，CUDA backward 中融合梯度计算和 Adam 更新 | 减少 `.grad` tensor、Python optimizer 调度和多 kernel update 开销 |
+| 参数状态 | PyTorch 参数和 optimizer state 由框架隐式维护 | 参数 tensor、Adam moments、densification info、VCP hits 在 prune/sort/split 时显式同步 | 适配动态 Gaussian 集合，同时避免 state 错配导致的隐性训练错误 |
+| 内存局部性 | Densification 后参数顺序自然 append | 周期性 Morton/z-order 重新排列参数和 moments | 改善 preprocess、blend、backward、Adam 中按 Gaussian id 访问的 locality |
+| 并行执行 | tile-based splatting | 保留 tile sort，并进一步使用 bucket 化调度长 tile primitive list | 缓解不同 tile primitive 数差异造成的负载不均 |
+| 工程复现 | 训练和实验产物较松散 | 版本化 config、CUDA event profile windows、benchmark cleanup、结果 CSV | 每个改动都能和 train time、PSNR、Gaussian 数、VRAM、profile 窗口对应起来 |
+
+因此本文的贡献可以概括为“保留 3DGS 的渲染语义，重写训练系统”。AnySplat 初始化解决早期结构搜索成本，multi-view 结构编辑解决冗余增长和删除风险，fused CUDA backend 解决每步数值更新成本，Morton/bucket/cache/profile 解决长实验中的内存局部性、负载均衡和可诊断性。
+
+这个对照也说明哪些部分不应被过度声称。当前维护版没有引入新的 Gaussian primitive，没有改变 alpha blending 公式，没有把 Metric3D/depth supervision 作为主线，也没有实现完整的 learned controller 或所有扩展结构因子。它的优势来自一组互相配合的训练系统改造，而不是单一 trick。
+
 优化参数仍是标准 3DGS 参数：
 
 $$
