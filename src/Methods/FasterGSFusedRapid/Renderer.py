@@ -91,56 +91,53 @@ class FasterGSFusedRapidRenderer(BaseRenderer):
 
     def render_image_training(self, view: View, update_densification_info: bool, bg_color: torch.Tensor, adam_step_count: int, autograd_dummy: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Renders an image for a given view."""
-        gaussians = self.model.gaussians
         image, autograd_dummy = diff_rasterize(
-            means=gaussians.means,
-            moments_means=gaussians.moments_means,
-            scales=gaussians.raw_scales,
-            moments_scales=gaussians.moments_scales,
-            rotations=gaussians.raw_rotations,
-            moments_rotations=gaussians.moments_rotations,
-            opacities=gaussians.raw_opacities,
-            moments_opacities=gaussians.moments_opacities,
-            sh_coefficients_0=gaussians.sh_coefficients_0,
-            moments_sh_coefficients_0=gaussians.moments_sh_coefficients_0,
-            sh_coefficients_rest=gaussians.sh_coefficients_rest,
-            moments_sh_coefficients_rest=gaussians.moments_sh_coefficients_rest,
+            means=self.model.gaussians.means,
+            moments_means=self.model.gaussians.moments_means,
+            scales=self.model.gaussians.raw_scales,
+            moments_scales=self.model.gaussians.moments_scales,
+            rotations=self.model.gaussians.raw_rotations,
+            moments_rotations=self.model.gaussians.moments_rotations,
+            opacities=self.model.gaussians.raw_opacities,
+            moments_opacities=self.model.gaussians.moments_opacities,
+            sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
+            moments_sh_coefficients_0=self.model.gaussians.moments_sh_coefficients_0,
+            sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
+            moments_sh_coefficients_rest=self.model.gaussians.moments_sh_coefficients_rest,
             autograd_dummy=autograd_dummy,
-            densification_info=gaussians.densification_info if update_densification_info else self._empty_tensor(torch.float32),
+            densification_info=self.model.gaussians.densification_info if update_densification_info else self._empty_tensor(torch.float32),
             metric_map=self._empty_tensor(torch.bool),
-            rasterizer_settings=extract_settings(view, gaussians.active_sh_bases, bg_color, gaussians.lr_means, adam_step_count),
+            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, bg_color, self.model.gaussians.lr_means, adam_step_count),
         )
         return image, autograd_dummy
 
     @torch.no_grad()
     def render_image_fastgs_score(self, view: View, bg_color: torch.Tensor = None) -> torch.Tensor:
         """Renders an unclamped image for FastGS score computation without optimizer updates."""
-        gaussians = self.model.gaussians
         image = rasterize_forward(
-            means=gaussians.means,
-            scales=gaussians.raw_scales,
-            rotations=gaussians.raw_rotations,
-            opacities=gaussians.raw_opacities,
-            sh_coefficients_0=gaussians.sh_coefficients_0,
-            sh_coefficients_rest=gaussians.sh_coefficients_rest,
+            means=self.model.gaussians.means,
+            scales=self.model.gaussians.raw_scales,
+            rotations=self.model.gaussians.raw_rotations,
+            opacities=self.model.gaussians.raw_opacities,
+            sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
+            sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             metric_map=self._empty_tensor(torch.bool),
-            rasterizer_settings=extract_settings(view, gaussians.active_sh_bases, view.camera.background_color if bg_color is None else bg_color, 0.0, 0),
+            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, view.camera.background_color if bg_color is None else bg_color, 0.0, 0),
         )
         return image
 
     @torch.no_grad()
     def render_image_metric_counts(self, view: View, metric_map: torch.Tensor, bg_color: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         """Renders an image and counts high-error pixel hits per Gaussian."""
-        gaussians = self.model.gaussians
         image, metric_counts = rasterize_forward(
-            means=gaussians.means,
-            scales=gaussians.raw_scales,
-            rotations=gaussians.raw_rotations,
-            opacities=gaussians.raw_opacities,
-            sh_coefficients_0=gaussians.sh_coefficients_0,
-            sh_coefficients_rest=gaussians.sh_coefficients_rest,
+            means=self.model.gaussians.means,
+            scales=self.model.gaussians.raw_scales,
+            rotations=self.model.gaussians.raw_rotations,
+            opacities=self.model.gaussians.raw_opacities,
+            sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
+            sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             metric_map=metric_map.reshape(-1).contiguous(),
-            rasterizer_settings=extract_settings(view, gaussians.active_sh_bases, view.camera.background_color if bg_color is None else bg_color, 0.0, 0),
+            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, view.camera.background_color if bg_color is None else bg_color, 0.0, 0),
             return_metric_counts=True,
         )
         return image, metric_counts
@@ -148,16 +145,15 @@ class FasterGSFusedRapidRenderer(BaseRenderer):
     @torch.no_grad()
     def render_image_inference(self, view: View, to_chw: bool = False) -> dict[str, torch.Tensor]:
         """Renders an image for a given view."""
-        gaussians = self.model.gaussians
         image = rasterize_forward(
-            means=gaussians.means,
-            scales=gaussians.raw_scales + math.log(max(self.SCALE_MODIFIER, 1e-6)),
-            rotations=gaussians.raw_rotations,
-            opacities=gaussians.raw_opacities,
-            sh_coefficients_0=gaussians.sh_coefficients_0,
-            sh_coefficients_rest=gaussians.sh_coefficients_rest,
+            means=self.model.gaussians.means,
+            scales=self.model.gaussians.raw_scales + math.log(max(self.SCALE_MODIFIER, 1e-6)),
+            rotations=self.model.gaussians.raw_rotations,
+            opacities=self.model.gaussians.raw_opacities,
+            sh_coefficients_0=self.model.gaussians.sh_coefficients_0,
+            sh_coefficients_rest=self.model.gaussians.sh_coefficients_rest,
             metric_map=self._empty_tensor(torch.bool),
-            rasterizer_settings=extract_settings(view, gaussians.active_sh_bases, view.camera.background_color, 0.0, 0),
+            rasterizer_settings=extract_settings(view, self.model.gaussians.active_sh_bases, view.camera.background_color, 0.0, 0),
         )
         image = image.clamp(0.0, 1.0)
         return {'rgb': image if to_chw else image.permute(1, 2, 0)}

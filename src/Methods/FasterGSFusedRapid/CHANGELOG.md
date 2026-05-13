@@ -1,12 +1,13 @@
 # FasterGSFusedRapid Changelog
 
-## fastergsfusedrapid-v0.4.35 pending experiment - 2026-05-13
+## fastergsfusedrapid-v0.4.35 rejected local experiment - 2026-05-13
 
-Code changes:
+Tested code changes:
 
 - Cached `self.model.gaussians` into a local `gaussians` variable inside renderer hot paths.
 - Applied the same local-reference cleanup to training render, FastGS score render, metric-count render, and inference render.
 - Did not change CUDA kernels, tensor values, optimizer math, sampling, loss weights, densification, pruning, Morton ordering, AnySplat initialization, or schedules.
+- Reverted the renderer code after the full benchmark because it missed the strict v0.4.27 PSNR gate.
 
 Motivation:
 
@@ -15,7 +16,30 @@ Motivation:
 
 Verification:
 
-- Pending compile/full benchmark.
+- `/usr/local/miniconda3/envs/nerficg/bin/python -m py_compile src/Methods/FasterGSFusedRapid/Renderer.py src/Methods/FasterGSFusedRapid/Trainer.py`
+- `git diff --check`
+- Full 7-scene repeat-3 benchmark:
+  `/usr/local/miniconda3/envs/nerficg/bin/python ./scripts/benchmark_360v2.py -m FasterGSFusedRapid --config-dir configs/fastergsfusedrapid_v0_4_27_mode_guard_17k --repeats 3 --suite-name fastergsfusedrapid_v0_4_35_renderer_local_gaussians_r3`
+- Suite output: `output/benchmarks/fastergsfusedrapid_v0_4_35_renderer_local_gaussians_r3`.
+
+Results:
+
+| scene | runs | train time | PSNR | SSIM | LPIPS | n_gaussians | peak allocated VRAM |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bicycle | 3 | 128.1749s | 25.3081 | 0.7443 | 0.2990 | 1,491,029 | 4.8885GiB |
+| bonsai | 3 | 80.4621s | 31.3985 | 0.9362 | 0.2585 | 415,241 | 5.7162GiB |
+| counter | 3 | 75.0294s | 28.3732 | 0.8918 | 0.2858 | 275,046 | 4.9944GiB |
+| garden | 3 | 85.3280s | 26.7613 | 0.8349 | 0.1914 | 870,137 | 2.9959GiB |
+| kitchen | 3 | 87.7538s | 30.8108 | 0.9185 | 0.1756 | 402,525 | 5.5879GiB |
+| room | 3 | 77.7826s | 31.2272 | 0.9110 | 0.3066 | 358,737 | 6.0464GiB |
+| stump | 3 | 87.4722s | 25.8376 | 0.7280 | 0.3025 | 1,186,966 | 2.5762GiB |
+| mean | 21 | 88.8576s | 28.5310 | 0.8521 | 0.2599 | 714,240 | 4.6865GiB |
+
+Interpretation:
+
+- v0.4.35 is slightly faster than v0.4.27 (`88.86s` vs `88.99s`) but fails the strict quality gate (`28.5310 < 28.5626`).
+- The change was intended to be a semantics-preserving Python attribute lookup cleanup, but full repeat-3 measurement shows it cannot be promoted under the current PSNR budget.
+- Do not promote v0.4.35. Keep v0.4.27 as the strict-quality baseline.
 
 ## fastergsfusedrapid-v0.4.34 rejected experiment - 2026-05-13
 
