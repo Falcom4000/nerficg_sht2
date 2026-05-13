@@ -633,6 +633,36 @@ $$
 - 为后续实现更完整的 unified controller、view coverage、score stability 或
   redundancy-based pruning 留出理论接口。
 
+### 3.1 结构控制因子 taxonomy
+
+如果把 densification、pruning、split、merge 都看成同一个集合编辑问题，
+每个 Gaussian 是否保留/删除/细化可以由多类证据共同决定。当前实现只使用其中一部分
+低成本信号；下面的 taxonomy 用来区分“已经在代码里使用的因素”和“未来 controller
+可以加入的候选因素”，避免把所有启发式混成一个单一分数。
+
+| 因子类别 | 典型信号 | 对 densify/prune 的含义 | 当前状态 |
+| --- | --- | --- | --- |
+| 几何接近度 | depth prior、surface proximity、点到已知表面的距离 | 离可靠表面近的 Gaussian 删除风险更高；远离表面且长期无贡献的点更像浮点冗余 | 当前维护版删除了 depth path，保留为未来扩展信号 |
+| 局部密度 | 邻域 Gaussian 数、空间聚类、KNN 半径 | 局部过密说明有冗余，可 prune/merge；局部稀疏且误差高说明应 densify | 当前未显式实现，可作为 redundancy controller |
+| covariance/scale | 最大 scale、各向异性、屏幕/世界尺度 | scale 过大且梯度高时更适合 split；scale 过大且贡献低时可 prune；过小且孤立的点可能是噪声 | 当前使用 large-scale prune 和 split 规则的一部分 |
+| 感知重要性 | LPIPS/SSIM sensitivity、perceptual mask、语义区域权重 | 人眼敏感区域更保守删除并允许 densify；平滑/低敏感区域可更激进压缩 | 当前训练 loss 仍是 L1+DSSIM，未做逐点 perceptual attribution |
+| 边缘和高频细节 | image gradient、edge mask、texture frequency | 高频/边缘区域需要更多 Gaussian 保持锐利；平滑区域可以少增长或更容易删除 | 当前由 view-space gradient 间接表达，未单独引入 edge mask |
+| 多视角贡献 | FastGS/RapidGS score、可见 view 数、multi-view consistency | 多视角稳定贡献高的点应保留；跨视角不一致或贡献低的点进入 VCP prune 候选 | 当前已用于 importance gate 和 VCP pruning |
+| 优化动态 | signed/abs gradient、梯度稳定性、loss 改进贡献 | 梯度大说明当前结构不足，触发 clone/split；长期低梯度且低贡献说明可 prune | 当前是 densification 主信号之一 |
+| 训练阶段 | iteration、densification window、pruning window、tail stage | 早期更偏向覆盖和增长；中后期更偏向压缩冗余并稳定收敛 | 当前由 schedule、DENSIFICATION_END、VCP window 控制 |
+| 冗余/相关性 | 位置相近、颜色/SH 相似、opacity/scale 相似、feature similarity | 与邻居高度相似的 Gaussian 可以 prune 或 merge；互补区域不应只按距离删除 | 当前未显式实现，适合未来 merge/prune 策略 |
+| 显存和资源预算 | Gaussian 总数、VRAM、tile/binning 压力、目标设备预算 | 超过预算时提高 prune 强度或限制 densify；预算充足时优先保质量 | 当前通过 budget fraction 和 schedule 间接控制 |
+| tile/pixel coverage | 覆盖有效像素数、tile 数、alpha contribution、visibility count | 几乎不覆盖有效像素的点更容易 prune；覆盖多 tile 且 alpha 高的点删除风险更高 | 当前 CUDA forward 计算 tile contribution，但未作为独立 prune 分数输出 |
+| temporal consistency | 跨时间帧贡献、动态轨迹稳定性、时序可见性 | 动态场景里多帧低贡献可 prune，多帧高贡献应保留/细化 | 当前数据集是静态 Mip-NeRF 360，不在本版本范围内 |
+
+这些因子不应简单相加成一个无解释的 score。更合理的写法是把它们分成三层：
+第一层是观测证据，例如 gradient、opacity、scale、coverage、multi-view score；
+第二层是风险估计，例如“删除后是否会损失高频细节”“是否只是局部冗余”；
+第三层是执行策略，例如 confirmation passes、budget fraction、schedule window。
+当前 FasterGSFusedRapid 主要使用低开销的 gradient、scale、opacity、multi-view score
+和阶段性 schedule；depth、perceptual attribution、redundancy、coverage 输出和动态时序
+一致性都应写成未来扩展，而不是当前已验证实现。
+
 ## 4. Forward 渲染路径
 
 Forward 部分的动机是减少无效 splat work，同时保留 3DGS 的 tile-based alpha
